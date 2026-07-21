@@ -9,14 +9,20 @@ if [ -f .env ]; then
   set +a
 fi
 if [ -f /opt/ros/humble/setup.bash ]; then
+  set +u
   source /opt/ros/humble/setup.bash
+  set -u
 elif [ -f /opt/ros/humble/install/setup.bash ]; then
+  set +u
   source /opt/ros/humble/install/setup.bash
+  set -u
 else
   echo "ROS2 Humble setup.bash not found" >&2
   exit 1
 fi
 if [ -f install/setup.bash ]; then
+  set +u
   source install/setup.bash
+  set -u
 fi
 ros2 launch ccai_jetbot_patrol patrol.launch.py

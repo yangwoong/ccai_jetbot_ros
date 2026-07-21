@@ -26,11 +26,10 @@ if ! docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
 fi
 
 echo "[container] rebuilding workspace"
-docker exec "${CONTAINER_NAME}" bash -lc "cd '${WORKDIR}' && ./scripts/container_build.sh"
+docker exec "${CONTAINER_NAME}" bash -c "cd '${WORKDIR}' && ./scripts/container_build.sh"
 
 echo "[host] restarting container"
 docker restart "${CONTAINER_NAME}" >/dev/null
 
 echo "updated and restarted ${CONTAINER_NAME}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
-

@@ -16,9 +16,8 @@ docker run -d \
   -v "${HOST_WS}:/home/workspace" \
   -w "${WORKDIR}" \
   "${IMAGE}" \
-  bash -lc "./scripts/container_run_patrol.sh"
+  bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"
-
