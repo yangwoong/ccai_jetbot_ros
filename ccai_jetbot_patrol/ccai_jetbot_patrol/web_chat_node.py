@@ -1,4 +1,5 @@
 import json
+import asyncio
 import threading
 from collections import deque
 
@@ -30,7 +31,7 @@ class WebChatNode(Node):
         self.command_pub = self.create_publisher(String, "/ccai/mission_command", 10)
         self.create_subscription(String, "/ccai/status", self.on_status, 10)
         self.create_subscription(String, "/ccai/events", self.on_event, 10)
-        self.messages: deque[dict[str, str]] = deque(maxlen=200)
+        self.messages = deque(maxlen=200)
         self.latest_status = "{}"
         self.app = self.build_app()
         self.start_server()
@@ -73,6 +74,8 @@ class WebChatNode(Node):
         port = int(self.get_parameter("port").value)
 
         def run() -> None:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
             uvicorn.run(self.app, host=host, port=port, log_level="warning")
 
         threading.Thread(target=run, daemon=True).start()
@@ -142,4 +145,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

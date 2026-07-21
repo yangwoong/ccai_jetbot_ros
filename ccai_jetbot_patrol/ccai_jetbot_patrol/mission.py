@@ -1,14 +1,13 @@
 import json
-from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict
 
 
-@dataclass(frozen=True)
 class MissionCommand:
-    type: str
-    target: str = ""
-    text: str = ""
-    raw: str = ""
+    def __init__(self, type: str, target: str = "", text: str = "", raw: str = "") -> None:
+        self.type = type
+        self.target = target
+        self.text = text
+        self.raw = raw
 
 
 def parse_mission_command(message: str) -> MissionCommand:
@@ -18,7 +17,7 @@ def parse_mission_command(message: str) -> MissionCommand:
 
     if raw.startswith("{"):
         try:
-            payload: dict[str, Any] = json.loads(raw)
+            payload: Dict[str, Any] = json.loads(raw)
             return MissionCommand(
                 type=str(payload.get("type", "status")),
                 target=str(payload.get("target", "")),
@@ -53,4 +52,3 @@ def command_to_json(command: MissionCommand) -> str:
         },
         ensure_ascii=False,
     )
-

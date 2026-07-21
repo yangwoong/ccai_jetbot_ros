@@ -3,7 +3,7 @@ import json
 import os
 import threading
 import time
-from typing import Any
+from typing import Any, Dict
 
 import requests
 import rclpy
@@ -61,7 +61,7 @@ class VlmClientNode(Node):
             mime_type = "image/png"
         b64_image = base64.b64encode(image_bytes).decode("ascii")
 
-        payload: dict[str, Any] = {
+        payload: Dict[str, Any] = {
             "model": model,
             "messages": [
                 {

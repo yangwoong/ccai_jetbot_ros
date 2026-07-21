@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import Dict
 
 import requests
 import rclpy
@@ -44,7 +45,7 @@ class OtaAgentNode(Node):
             return path.read_text(encoding="utf-8").strip()
         return ""
 
-    def apply_manifest(self, manifest: dict) -> None:
+    def apply_manifest(self, manifest: Dict) -> None:
         commands = manifest.get("commands", [])
         if not isinstance(commands, list):
             self.report("ota manifest rejected: commands must be a list")
@@ -55,7 +56,15 @@ class OtaAgentNode(Node):
                 self.report("ota command skipped: non-string command")
                 continue
             self.report(f"ota running: {command}")
-            result = subprocess.run(command.split(), cwd=workdir, capture_output=True, text=True, timeout=600, check=False)
+            result = subprocess.run(
+                command.split(),
+                cwd=workdir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                timeout=600,
+                check=False,
+            )
             if result.returncode != 0:
                 self.report(f"ota failed: {command}: {result.stderr[-500:]}")
                 return
