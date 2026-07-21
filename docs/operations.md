@@ -28,8 +28,10 @@ PORT=8000 TENSOR_PARALLEL_SIZE=1 ./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-32B-
 상태 확인:
 
 ```bash
-curl http://H200_IP:8000/v1/models
+curl -H "Authorization: Bearer VLLM_API_KEY" http://H200_IP:8000/v1/models
 ```
+
+H200 API 키, 도커 외부 웹 채팅, 텔레그램 연결 절차는 `docs/connectivity.md`에 상세히 정리되어 있습니다.
 
 ## 로그 확인
 

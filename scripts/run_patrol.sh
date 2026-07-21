@@ -8,7 +8,14 @@ if [ -f .env ]; then
   source .env
   set +a
 fi
-source /opt/ros/humble/setup.bash
+if [ -f /opt/ros/humble/setup.bash ]; then
+  source /opt/ros/humble/setup.bash
+elif [ -f /opt/ros/humble/install/setup.bash ]; then
+  source /opt/ros/humble/install/setup.bash
+else
+  echo "ROS2 Humble setup.bash not found" >&2
+  exit 1
+fi
 if [ -f install/setup.bash ]; then
   source install/setup.bash
 fi

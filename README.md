@@ -54,7 +54,9 @@ vlm_client:
     model: "Qwen/Qwen3-VL-32B-Instruct"
 ```
 
-또는 systemd/.env 환경변수로 `CCAI_VLLM_API_BASE_URL`, `CCAI_VLLM_MODEL`, `CCAI_TELEGRAM_BOT_TOKEN`, `CCAI_TELEGRAM_ALLOWED_CHAT_ID`, `CCAI_OTA_MANIFEST_URL`을 지정할 수 있습니다.
+또는 systemd/.env 환경변수로 `CCAI_VLLM_API_BASE_URL`, `CCAI_VLLM_API_KEY`, `CCAI_VLLM_MODEL`, `CCAI_TELEGRAM_BOT_TOKEN`, `CCAI_TELEGRAM_ALLOWED_CHAT_ID`, `CCAI_OTA_MANIFEST_URL`을 지정할 수 있습니다.
+
+도커 외부 웹 채팅, 텔레그램, H200 API 키 설정은 [Connectivity Guide](docs/connectivity.md)를 참고하세요.
 
 ## 관리자 명령 예시
 
