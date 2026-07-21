@@ -1,0 +1,36 @@
+patrol_node:
+  ros__parameters:
+    linear_speed: 0.12
+    angular_speed: 0.35
+    heartbeat_seconds: 2.0
+    safe_stop_on_idle: true
+
+vlm_client_node:
+  ros__parameters:
+    api_base_url: "http://H200_IP:8000/v1"
+    api_key: ""
+    model: "Qwen/Qwen3-VL-32B-Instruct"
+    image_topic: "/image_raw/compressed"
+    prompt: "Describe patrol-relevant safety issues in this robot camera image. Be concise."
+    min_interval_seconds: 3.0
+    request_timeout_seconds: 20.0
+
+web_chat_node:
+  ros__parameters:
+    host: "0.0.0.0"
+    port: 8080
+
+telegram_bridge_node:
+  ros__parameters:
+    bot_token: ""
+    allowed_chat_id: ""
+    poll_seconds: 2.0
+
+ota_agent_node:
+  ros__parameters:
+    manifest_url: ""
+    current_version_file: "data/current_version.txt"
+    check_interval_seconds: 300.0
+    auto_apply: false
+    workdir: "."
+

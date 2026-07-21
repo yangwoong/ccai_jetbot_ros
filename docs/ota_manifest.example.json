@@ -1,0 +1,10 @@
+{
+  "version": "2026.07.21-1",
+  "commands": [
+    "git fetch origin",
+    "git pull --ff-only",
+    "colcon build --symlink-install",
+    "sudo systemctl restart ccai-jetbot.service"
+  ]
+}
+
