@@ -18,8 +18,9 @@ def parse_mission_command(message: str) -> MissionCommand:
     if raw.startswith("{"):
         try:
             payload: Dict[str, Any] = json.loads(raw)
+            command_type = str(payload.get("type", payload.get("command", "status")))
             return MissionCommand(
-                type=str(payload.get("type", "status")),
+                type=normalize_command_type(command_type),
                 target=str(payload.get("target", "")),
                 text=str(payload.get("text", "")),
                 raw=message,
@@ -28,18 +29,52 @@ def parse_mission_command(message: str) -> MissionCommand:
             return MissionCommand(type="say", text=raw, raw=message)
 
     lowered = raw.lower()
-    if lowered in {"status", "state", "report"}:
+    if lowered in {"status", "state", "report", "상태", "상태 확인", "보고", "/status"}:
         return MissionCommand(type="status", raw=message)
-    if lowered in {"patrol start", "start patrol", "순찰 시작"}:
+    if lowered in {"patrol start", "start patrol", "start", "run", "순찰 시작", "시작", "/start"}:
         return MissionCommand(type="patrol_start", raw=message)
-    if lowered in {"patrol stop", "stop patrol", "순찰 중지", "순찰 정지"}:
+    if lowered in {"patrol stop", "stop patrol", "stop", "halt", "순찰 중지", "순찰 정지", "정지", "멈춰", "/stop"}:
         return MissionCommand(type="patrol_stop", raw=message)
-    if lowered in {"go home", "return home", "복귀"}:
+    if lowered in {"go home", "return home", "home", "복귀", "기지로", "충전소로"}:
         return MissionCommand(type="go_home", raw=message)
     if lowered.startswith("inspect "):
         return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
+    if lowered.startswith("점검 "):
+        return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
+    if "순찰" in lowered and ("시작" in lowered or "출발" in lowered):
+        return MissionCommand(type="patrol_start", raw=message)
+    if "순찰" in lowered and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
+        return MissionCommand(type="patrol_stop", raw=message)
+    if "복귀" in lowered or "충전소" in lowered:
+        return MissionCommand(type="go_home", raw=message)
+    if "점검" in lowered:
+        target = raw.split("점검", 1)[0].strip()
+        target = target.replace("를", "").replace("을", "").strip()
+        return MissionCommand(type="inspect", target=target or "requested target", raw=message)
+    if "상태" in lowered or "보고" in lowered:
+        return MissionCommand(type="status", raw=message)
 
     return MissionCommand(type="say", text=raw, raw=message)
+
+
+def normalize_command_type(command_type: str) -> str:
+    lowered = command_type.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "patrol": "patrol_start",
+        "start": "patrol_start",
+        "start_patrol": "patrol_start",
+        "stop": "patrol_stop",
+        "stop_patrol": "patrol_stop",
+        "return_home": "go_home",
+        "home": "go_home",
+        "report": "status",
+        "state": "status",
+    }
+    return aliases.get(lowered, lowered)
+
+
+def is_direct_robot_command(command: MissionCommand) -> bool:
+    return command.type in {"status", "patrol_start", "patrol_stop", "go_home", "inspect"}
 
 
 def command_to_json(command: MissionCommand) -> str:

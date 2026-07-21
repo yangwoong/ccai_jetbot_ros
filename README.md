@@ -14,6 +14,7 @@ ROS2 Humble 기반 자율순찰 로봇 프로젝트입니다. Jetson Nano Dev Ki
 - `ccai_jetbot_patrol`: ROS2 Python 패키지
 - `patrol_node`: 순찰 상태 머신, `/cmd_vel` 제어, 임무 수신
 - `vlm_client_node`: 카메라 이미지를 vLLM OpenAI 호환 API로 분석
+- `llm_control_node`: 웹/텔레그램 관리자 입력을 직접 명령 또는 LLM 기반 명령으로 라우팅
 - `web_chat_node`: FastAPI 기반 관리자 웹 채팅/API
 - `telegram_bridge_node`: 텔레그램 Bot API 브리지
 - `ota_agent_node`: OTA manifest 확인 및 업데이트 계획/적용
@@ -57,6 +58,7 @@ vlm_client:
 또는 systemd/.env 환경변수로 `CCAI_VLLM_API_BASE_URL`, `CCAI_VLLM_API_KEY`, `CCAI_VLLM_MODEL`, `CCAI_TELEGRAM_BOT_TOKEN`, `CCAI_TELEGRAM_ALLOWED_CHAT_ID`, `CCAI_OTA_MANIFEST_URL`을 지정할 수 있습니다.
 
 도커 외부 웹 채팅, 텔레그램, H200 API 키 설정은 [Connectivity Guide](docs/connectivity.md)를 참고하세요.
+도커에 진입하지 않는 호스트 실행/업데이트 방법은 [Docker Host Operations](docs/docker_host_operations.md)를 참고하세요.
 
 ## 관리자 명령 예시
 
@@ -78,6 +80,7 @@ patrol stop
 go home
 inspect entrance
 status
+llm status
 ```
 
 ## OTA 업데이트 흐름

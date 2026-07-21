@@ -28,11 +28,14 @@ class WebChatNode(Node):
         super().__init__("web_chat_node")
         self.declare_parameter("host", "0.0.0.0")
         self.declare_parameter("port", 8080)
-        self.command_pub = self.create_publisher(String, "/ccai/mission_command", 10)
+        self.admin_text_pub = self.create_publisher(String, "/ccai/admin_text", 10)
         self.create_subscription(String, "/ccai/status", self.on_status, 10)
         self.create_subscription(String, "/ccai/events", self.on_event, 10)
+        self.create_subscription(String, "/ccai/llm_status", self.on_llm_status, 10)
+        self.create_subscription(String, "/ccai/llm_response", self.on_llm_response, 10)
         self.messages = deque(maxlen=200)
         self.latest_status = "{}"
+        self.latest_llm_status = "{}"
         self.app = self.build_app()
         self.start_server()
         self.get_logger().info("web_chat_node ready")
@@ -42,6 +45,12 @@ class WebChatNode(Node):
 
     def on_event(self, msg: String) -> None:
         self.messages.append({"source": "robot", "message": msg.data})
+
+    def on_llm_status(self, msg: String) -> None:
+        self.latest_llm_status = msg.data
+
+    def on_llm_response(self, msg: String) -> None:
+        self.messages.append({"source": "llm", "message": msg.data})
 
     def build_app(self):
         if FastAPI is None:
@@ -59,12 +68,16 @@ class WebChatNode(Node):
                 status_payload = json.loads(self.latest_status)
             except json.JSONDecodeError:
                 status_payload = {"raw": self.latest_status}
-            return {"status": status_payload, "messages": list(self.messages)}
+            try:
+                llm_status_payload = json.loads(self.latest_llm_status)
+            except json.JSONDecodeError:
+                llm_status_payload = {"raw": self.latest_llm_status}
+            return {"status": status_payload, "llm_status": llm_status_payload, "messages": list(self.messages)}
 
         @app.post("/api/chat")
         def chat(req: ChatRequest):
             self.messages.append({"source": "admin", "message": req.message})
-            self.command_pub.publish(String(data=req.message))
+            self.admin_text_pub.publish(String(data=req.message))
             return {"accepted": True}
 
         return app
@@ -104,17 +117,19 @@ HTML_PAGE = """
 </head>
 <body>
 <main>
-  <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span></header>
+  <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span><span id="llm">llm</span></header>
   <section id="log"></section>
   <form id="form"><input id="message" autocomplete="off" placeholder="status, patrol start, inspect entrance"><button>Send</button></form>
 </main>
 <script>
 const log = document.getElementById('log');
 const state = document.getElementById('state');
+const llm = document.getElementById('llm');
 async function refresh() {
   const res = await fetch('/api/status');
   const data = await res.json();
   state.textContent = data.status.state || 'unknown';
+  llm.textContent = data.llm_status && data.llm_status.connected ? 'LLM online' : 'LLM offline';
   log.innerHTML = data.messages.map(m => `<p class="msg"><span class="src">${m.source}</span>${m.message}</p>`).join('');
   log.scrollTop = log.scrollHeight;
 }

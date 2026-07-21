@@ -50,9 +50,9 @@ class VlmClientNode(Node):
             self.inflight = False
 
     def call_vlm(self, image_bytes: bytes, image_format: str) -> str:
-        api_base_url = str(self.get_parameter("api_base_url").value).rstrip("/")
-        api_key = str(self.get_parameter("api_key").value)
-        model = str(self.get_parameter("model").value)
+        api_base_url = self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
+        api_key = self.param_or_env("api_key", "CCAI_VLLM_API_KEY", "")
+        model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
         prompt = str(self.get_parameter("prompt").value)
         timeout = float(self.get_parameter("request_timeout_seconds").value)
 
@@ -86,6 +86,10 @@ class VlmClientNode(Node):
         response.raise_for_status()
         data = response.json()
         return str(data["choices"][0]["message"]["content"]).strip()
+
+    def param_or_env(self, parameter_name: str, env_name: str, default: str) -> str:
+        value = str(self.get_parameter(parameter_name).value or "")
+        return value or os.getenv(env_name, default)
 
 
 def main(args=None) -> None:

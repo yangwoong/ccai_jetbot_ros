@@ -62,6 +62,7 @@ class PatrolNode(Node):
             self.publish_event(f"inspecting {command.target}")
         elif command.type == "status":
             self.publish_status()
+            self.publish_event(self.status_text())
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
         else:
@@ -102,6 +103,13 @@ class PatrolNode(Node):
         }
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 
+    def status_text(self) -> str:
+        return "status: state={0}, target={1}, last_vlm={2}".format(
+            self.state.value,
+            self.current_target or "none",
+            (self.last_vlm_summary or "none")[:120],
+        )
+
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
@@ -120,4 +128,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -24,6 +24,7 @@ setup(
         "console_scripts": [
             "patrol_node = ccai_jetbot_patrol.patrol_node:main",
             "vlm_client_node = ccai_jetbot_patrol.vlm_client_node:main",
+            "llm_control_node = ccai_jetbot_patrol.llm_control_node:main",
             "web_chat_node = ccai_jetbot_patrol.web_chat_node:main",
             "telegram_bridge_node = ccai_jetbot_patrol.telegram_bridge_node:main",
             "ota_agent_node = ccai_jetbot_patrol.ota_agent_node:main",

@@ -7,13 +7,21 @@ patrol_node:
 
 vlm_client_node:
   ros__parameters:
-    api_base_url: "http://H200_IP:8000/v1"
+    api_base_url: ""
     api_key: ""
-    model: "Qwen/Qwen3-VL-32B-Instruct"
+    model: ""
     image_topic: "/image_raw/compressed"
     prompt: "Describe patrol-relevant safety issues in this robot camera image. Be concise."
     min_interval_seconds: 3.0
     request_timeout_seconds: 20.0
+
+llm_control_node:
+  ros__parameters:
+    api_base_url: ""
+    api_key: ""
+    model: ""
+    request_timeout_seconds: 20.0
+    health_check_seconds: 30.0
 
 web_chat_node:
   ros__parameters:
@@ -33,4 +41,3 @@ ota_agent_node:
     check_interval_seconds: 300.0
     auto_apply: false
     workdir: "."
-

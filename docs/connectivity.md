@@ -199,11 +199,19 @@ cd /home/workspace/ccai_jetbot_ros
 
 ```text
 status
+llm status
 patrol start
 inspect entrance
 patrol stop
 go home
+입구를 점검하고 이상 있으면 보고해
 ```
+
+웹 채팅과 텔레그램 입력은 `/ccai/admin_text`로 들어간 뒤 `llm_control_node`가 처리합니다.
+
+- `status`, `patrol start`, `patrol stop`, `go home`, `inspect ...` 같은 직접 명령은 LLM 없이 즉시 처리합니다.
+- 자연어 명령은 H200 vLLM에 보내 JSON 명령으로 변환한 뒤 `/ccai/mission_command`로 전달합니다.
+- `llm status`는 H200 `/v1/models` 연결 상태를 확인하고 결과를 `/ccai/events`, `/ccai/llm_status`로 보고합니다.
 
 로봇 이벤트는 `/ccai/events`로 발행되고, `telegram_bridge_node`가 허용된 chat_id로 다시 전송합니다.
 
@@ -241,4 +249,3 @@ ros2 topic echo /ccai/status
 - vLLM API는 `--api-key`를 반드시 설정합니다.
 - 텔레그램은 `allowed_chat_id`를 설정해 지정 관리자만 명령할 수 있게 합니다.
 - 8080 웹 포트와 8000 vLLM 포트를 인터넷 전체에 직접 노출하지 마세요.
-

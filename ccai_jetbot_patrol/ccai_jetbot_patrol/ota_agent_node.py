@@ -23,7 +23,7 @@ class OtaAgentNode(Node):
         self.get_logger().info("ota_agent_node ready")
 
     def check_once(self) -> None:
-        manifest_url = str(self.get_parameter("manifest_url").value)
+        manifest_url = self.param_or_env("manifest_url", "CCAI_OTA_MANIFEST_URL", "")
         if not manifest_url:
             return
         try:
@@ -76,6 +76,10 @@ class OtaAgentNode(Node):
     def report(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
+
+    def param_or_env(self, parameter_name: str, env_name: str, default: str) -> str:
+        value = str(self.get_parameter(parameter_name).value or "")
+        return value or os.getenv(env_name, default)
 
 
 def main(args=None) -> None:
