@@ -74,35 +74,14 @@ CCAI_TELEGRAM_ALLOWED_CHAT_ID=123456789
 CCAI_OTA_MANIFEST_URL=
 ```
 
-`scripts/run_patrol.sh`는 실행 시 저장소 루트의 `.env`를 자동으로 읽습니다.
+컨테이너 안에서 실행되는 `scripts/container_run_patrol.sh`가 저장소 루트의 `.env`를 자동으로 읽습니다.
 
 ## 3. 외부에서 도커 웹 채팅 접속
 
-웹 채팅 노드는 기본적으로 컨테이너 안에서 `0.0.0.0:8080`으로 실행됩니다.
-
-### 권장: host network
-
-Jetson/로봇에서 가장 단순한 방식은 `--network host`입니다. 이 경우 컨테이너의 8080 포트가 곧 Jetson 호스트의 8080 포트입니다.
+웹 채팅 노드는 컨테이너 안에서 `0.0.0.0:8080`으로 실행됩니다. `scripts/host_docker_run.sh`는 항상 `--network host`로 컨테이너를 띄우므로 컨테이너의 8080 포트가 곧 Jetson 호스트의 8080 포트입니다. 배포는 `docs/docker_host_operations.md`를 따르세요.
 
 ```bash
-docker run -it --rm \
-  --name ccai-jetbot \
-  --network host \
-  --privileged \
-  -v /home/roboat/work/ros2_ws:/home/workspace \
-  -w /home/workspace/ccai_jetbot_ros \
-  osrf/ros:humble-ros-base \
-  bash
-```
-
-컨테이너 안에서 실행:
-
-```bash
-cd /home/workspace/ccai_jetbot_ros
-source /opt/ros/humble/setup.bash 2>/dev/null || source /opt/ros/humble/install/setup.bash
-colcon build --symlink-install
-source install/setup.bash
-./scripts/run_patrol.sh
+CCAI_SAFE_START=1 CCAI_ENABLE_WEB=1 ./scripts/host_docker_run.sh
 ```
 
 관리자 PC 브라우저에서 접속:
@@ -124,29 +103,6 @@ curl -X POST http://JETSON_IP:8080/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message":"patrol start"}'
 ```
-
-### 대안: 포트 매핑
-
-`--network host`를 쓰지 않는 경우에는 8080 포트를 명시적으로 매핑합니다.
-
-```bash
-docker run -it --rm \
-  --name ccai-jetbot \
-  -p 8080:8080 \
-  --privileged \
-  -v /home/roboat/work/ros2_ws:/home/workspace \
-  -w /home/workspace/ccai_jetbot_ros \
-  osrf/ros:humble-ros-base \
-  bash
-```
-
-접속 주소는 동일합니다.
-
-```text
-http://JETSON_IP:8080
-```
-
-단, ROS2 DDS 통신까지 여러 컨테이너/호스트에 걸쳐 사용할 계획이면 host network가 더 단순합니다.
 
 ## 4. 텔레그램 연결 방법
 
@@ -188,11 +144,10 @@ CCAI_TELEGRAM_BOT_TOKEN=BOT_TOKEN
 CCAI_TELEGRAM_ALLOWED_CHAT_ID=123456789
 ```
 
-컨테이너를 재시작하거나 노드를 다시 실행합니다.
+호스트에서 컨테이너를 재시작합니다.
 
 ```bash
-cd /home/workspace/ccai_jetbot_ros
-./scripts/run_patrol.sh
+docker restart ccai-jetbot
 ```
 
 텔레그램에서 다음 명령을 보냅니다.
@@ -213,7 +168,7 @@ go home
 - 자연어 명령은 H200 vLLM에 보내 JSON 명령으로 변환한 뒤 `/ccai/mission_command`로 전달합니다.
 - `llm status`는 H200 `/v1/models` 연결 상태를 확인하고 결과를 `/ccai/events`, `/ccai/llm_status`로 보고합니다.
 
-로봇 이벤트는 `/ccai/events`로 발행되고, `telegram_bridge_node`가 허용된 chat_id로 다시 전송합니다.
+로봇 이벤트는 `/ccai/events`로 발행되고, `telegram_bridge_node`가 허용된 chat_id로 다시 전송합니다. 순찰 중 `vlm_client_node`의 관찰 결과에 사람/위험/화재/막힘 등 주의가 필요한 내용이 감지되면 `patrol_node`가 `attention required: ...` 이벤트를 발행하므로, 이 알림도 자동으로 텔레그램에 전달됩니다. 별도 설정 없이 `CCAI_TELEGRAM_BOT_TOKEN`/`CCAI_TELEGRAM_ALLOWED_CHAT_ID`와 VLM(H200) 연결만 되어 있으면 동작합니다.
 
 ## 5. 네트워크 점검 순서
 

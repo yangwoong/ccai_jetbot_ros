@@ -47,22 +47,12 @@ CCAI_CSI_CAPTURE_WIDTH="${CCAI_CSI_CAPTURE_WIDTH:-}"
 CCAI_CSI_CAPTURE_HEIGHT="${CCAI_CSI_CAPTURE_HEIGHT:-}"
 CCAI_CSI_FPS="${CCAI_CSI_FPS:-}"
 CCAI_CSI_FLIP_METHOD="${CCAI_CSI_FLIP_METHOD:-}"
-CCAI_ARGUS_MOUNT_MODE="${CCAI_ARGUS_MOUNT_MODE:-}"
 if [ -z "${CCAI_CAMERA_MODE:-}" ]; then
   if [ "${CCAI_SAFE_START}" = "1" ]; then
     CCAI_CAMERA_MODE="disabled"
   else
-    CCAI_CAMERA_MODE="usb"
+    CCAI_CAMERA_MODE="csi"
   fi
-fi
-if [ "${CCAI_CAMERA_MODE}" = "url" ] && [ -z "${CCAI_CAMERA_URL}" ]; then
-  CCAI_CAMERA_URL="http://127.0.0.1:${CCAI_CSI_MJPEG_PORT:-8090}/snapshot.jpg"
-fi
-if [ "${CCAI_CAMERA_MODE}" = "url" ]; then
-  CCAI_CAMERA_WIDTH="${CCAI_CAMERA_WIDTH:-224}"
-  CCAI_CAMERA_HEIGHT="${CCAI_CAMERA_HEIGHT:-224}"
-  CCAI_CAMERA_FPS="${CCAI_CAMERA_FPS:-5}"
-  CCAI_CAMERA_JPEG_QUALITY="${CCAI_CAMERA_JPEG_QUALITY:-45}"
 fi
 DOCKER_PRIVILEGED="${DOCKER_PRIVILEGED:-0}"
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-}"
@@ -71,23 +61,19 @@ if [ "${DOCKER_PRIVILEGED}" = "1" ]; then
   DOCKER_ARGS+=(--privileged)
 fi
 
+# CSI needs the NVIDIA runtime plus the host's Argus socket. Bind-mounting all
+# of /tmp (rather than just /tmp/argus_socket) avoids stale-inode issues after
+# nvargus-daemon restarts.
 if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ]; then
   DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-1}"
   CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT:-10}"
-  CCAI_ARGUS_MOUNT_MODE="${CCAI_ARGUS_MOUNT_MODE:-tmp}"
+  DOCKER_ARGS+=(--ipc host)
+  DOCKER_ARGS+=(-v /tmp:/tmp)
 fi
-CCAI_ARGUS_MOUNT_MODE="${CCAI_ARGUS_MOUNT_MODE:-socket}"
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-0}"
 
 if [ "${DOCKER_RUNTIME_NVIDIA}" = "1" ]; then
   DOCKER_ARGS+=(--runtime nvidia)
-fi
-
-if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_ARGUS_MOUNT_MODE}" = "tmp" ]; then
-  DOCKER_ARGS+=(--ipc host)
-  DOCKER_ARGS+=(-v /tmp:/tmp)
-elif [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_ARGUS_MOUNT_MODE}" = "socket" ] && [ -e /tmp/argus_socket ]; then
-  DOCKER_ARGS+=(-v /tmp/argus_socket:/tmp/argus_socket)
 fi
 
 if [ "${CCAI_ENABLE_CAMERA}" = "1" ]; then
@@ -136,7 +122,6 @@ docker run -d \
   -e CCAI_CSI_CAPTURE_HEIGHT="${CCAI_CSI_CAPTURE_HEIGHT}" \
   -e CCAI_CSI_FPS="${CCAI_CSI_FPS}" \
   -e CCAI_CSI_FLIP_METHOD="${CCAI_CSI_FLIP_METHOD}" \
-  -e CCAI_ARGUS_MOUNT_MODE="${CCAI_ARGUS_MOUNT_MODE}" \
   -e FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN}" \
   -v "${HOST_WS}:/home/workspace" \
   "${DOCKER_ARGS[@]}" \
@@ -145,6 +130,6 @@ docker run -d \
   bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
-echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} argus_mount=${CCAI_ARGUS_MOUNT_MODE} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
+echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"

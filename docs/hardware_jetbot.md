@@ -90,21 +90,47 @@ OLED가 보통 `0x3c`로 보이면 정상입니다.
 
 ## 카메라
 
-기본은 USB 카메라 `/dev/video0`입니다.
+Waveshare JetBot AI Kit은 CSI 카메라를 씁니다. 기본값은 CSI이고, `host_docker_run.sh`가 안전 모드가 아닐 때 `CCAI_CAMERA_MODE=csi`, `--runtime nvidia`, `--ipc host`, `-v /tmp:/tmp`를 자동으로 구성합니다. 별도 설정 없이 아래처럼 실행하면 됩니다.
+
+```bash
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ./scripts/host_docker_run.sh
+```
+
+USB 카메라를 쓰는 경우에만 `CCAI_CAMERA_MODE=usb`를 명시합니다.
 
 ```yaml
 camera_node:
   ros__parameters:
     camera_index: 0
     camera_device: ""
-    camera_mode: "usb"
-    use_gstreamer: false
+    camera_mode: "csi"
+    use_gstreamer: true
     force_v4l2: true
     width: 320
     height: 240
     fps: 5.0
     jpeg_quality: 45
 ```
+
+### CSI가 안 나올 때 가장 먼저 확인할 것: `nvargus-daemon`
+
+Docker 안에서 CSI가 매번 `Failed to create CaptureSession`으로 실패하는데 `gst-launch-1.0 nvarguscamerasrc ...`를 호스트에서 직접 실행해도 똑같이 실패한다면, 이건 Docker/ROS 코드 문제가 아니라 호스트의 `nvargus-daemon` 설정 문제일 수 있습니다. `/etc/systemd/system/nvargus-daemon.service`에 `Environment="enableCamInfiniteTimeout=1"`이 들어있으면 일부 L4T(R32.7.1 확인됨) + imx219 조합에서 Argus의 ViCsi 오픈 단계가 깨져서 세션 생성이 항상 실패합니다. 이 경우 해당 줄을 지우고 재적용하면 해결됩니다.
+
+```bash
+sudo cp /etc/systemd/system/nvargus-daemon.service /etc/systemd/system/nvargus-daemon.service.bak
+sudo sed -i '/Environment="enableCamInfiniteTimeout=1"/d' /etc/systemd/system/nvargus-daemon.service
+sudo systemctl daemon-reload
+sudo systemctl restart nvargus-daemon
+```
+
+확인:
+
+```bash
+gst-launch-1.0 nvarguscamerasrc num-buffers=1 sensor-mode=3 ! 'video/x-raw(memory:NVMM),width=816,height=616,format=NV12,framerate=30/1' ! nvvidconv ! jpegenc ! filesink location=/tmp/argus_test.jpg -e
+ls -l /tmp/argus_test.jpg
+```
+
+이 파일 크기가 0보다 크면 CSI 자체는 정상입니다. 이건 이 Jetson의 systemd 설정 문제라 저장소 코드에는 반영되지 않으니, 재설치/재플래시 시 다시 나타날 수 있다는 점을 기억하세요.
 
 USB 카메라를 따로 연결해서 사용할 때:
 
@@ -123,24 +149,7 @@ USB 장치 확인:
 CCAI_CAMERA_DEVICE=/dev/video0 ./scripts/host_camera_probe.sh
 ```
 
-CSI 카메라를 쓰면:
-
-```yaml
-camera_node:
-  ros__parameters:
-    camera_mode: "csi"
-    use_gstreamer: true
-    csi_sensor_mode: 3
-    csi_capture_width: 816
-    csi_capture_height: 616
-    csi_fps: 30
-```
-
-CSI 카메라 컨테이너 실행에는 Argus socket 접근과 NVIDIA 런타임이 필요합니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 기본적으로 `/tmp:/tmp`를 마운트하고 `--ipc host`, `--runtime nvidia`를 사용합니다. `/tmp/argus_socket` 단일 마운트는 `nvargus-daemon` 재시작 후 socket inode가 바뀌면 컨테이너에서 stale socket을 볼 수 있습니다.
-
-```bash
-CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
-```
+CSI 카메라 컨테이너 실행에는 Argus socket 접근과 NVIDIA 런타임이 필요합니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 항상 `/tmp:/tmp`를 마운트하고 `--ipc host`, `--runtime nvidia`를 사용합니다(이게 기본값이자 유일한 마운트 방식입니다). `/tmp/argus_socket`만 단일 마운트하면 `nvargus-daemon` 재시작 후 socket inode가 바뀌었을 때 컨테이너에서 stale socket을 볼 수 있어서, 전체 `/tmp`를 마운트하는 방식으로 통일했습니다.
 
 CSI 파이프라인 기본값은 NVIDIA JetBot의 `sensor-mode=3`, `816x616`, `NV12`, `30fps` 설정을 따릅니다. 센서 방향이 뒤집혀 있으면 `CCAI_CSI_FLIP_METHOD=2`처럼 `nvvidconv flip-method` 값을 지정합니다.
 
@@ -149,13 +158,15 @@ JetBot 공개 코드와 동일하게 open probe 단계에서는 첫 프레임이
 CSI만 직접 확인:
 
 ```bash
-CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 CCAI_ARGUS_MOUNT_MODE=tmp ./scripts/host_docker_run.sh
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 ./scripts/host_docker_run.sh
 ./scripts/host_csi_probe.sh
 ```
 
-CSI 모드는 기본적으로 10회만 open/probe를 재시도합니다. Argus 로그에 `Sensor could not be opened` 또는 `V4L2Device not available`이 반복되면 CSI 센서/케이블/Jetson 드라이버 쪽 문제로 보고 USB 카메라 운용을 먼저 확인하세요.
+CSI 모드는 기본적으로 10회만 open/probe를 재시도합니다. Argus 로그에 `Sensor could not be opened` 또는 `V4L2Device not available`이 반복되면 CSI 센서/케이블/Jetson 드라이버 쪽 문제입니다. 특히 `Failed to create CaptureSession`이 Docker 안팎을 가리지 않고 매번 나면, 위의 "CSI가 안 나올 때 가장 먼저 확인할 것" 절의 `nvargus-daemon` `enableCamInfiniteTimeout` 문제부터 확인하세요 — 대부분 이게 원인입니다.
 
-Docker 내부 CSI가 `Failed to create CaptureSession` 또는 `opened=true/read=false`로 실패하지만 호스트의 JetBot 공개 코드는 영상이 나오는 경우, CSI를 호스트에서 열고 Docker ROS는 MJPEG URL로 받습니다.
+### (드문 경우) 호스트 MJPEG 브리지로 우회
+
+`nvargus-daemon`을 고쳐도 Docker 안에서만 CSI가 계속 실패하고 호스트에서는 되는 경우에 한해서만 아래 우회 경로를 씁니다. 이 경로는 호스트에서 별도 프로세스(`host_csi_mjpeg_server.py`)로 CSI를 열어 MJPEG/스냅샷으로 서비스하고, Docker ROS는 그 URL을 구독합니다. 정상적인 경우엔 필요 없는 추가 구성요소이니 CSI 직접 모드가 되면 이 경로는 쓰지 마세요.
 
 ```bash
 # 호스트에서 CSI를 MJPEG로 송출
@@ -173,20 +184,6 @@ curl http://127.0.0.1:8090/health
 curl http://127.0.0.1:8090/snapshot.jpg --output /tmp/csi.jpg
 curl http://127.0.0.1:8080/api/camera.jpg --output /tmp/jetbot.jpg
 ```
-
-호스트의 JetBot 공개 코드가 동작한다면 MJPEG 서버는 기본적으로 `jetbot.Camera`를 먼저 시도하고, 실패하면 OpenCV GStreamer로 fallback합니다. JetBot 백엔드만 강제하려면:
-
-```bash
-# 최초 1회, 호스트에 JetBot 공개 repo 준비
-cd ~
-[ -d jetbot ] || git clone http://github.com/NVIDIA-AI-IOT/jetbot.git
-
-cd ~/work/ros2_ws/ccai_jetbot_ros
-./scripts/host_csi_mjpeg_stop.sh
-JETBOT_REPO_PATH=$HOME/jetbot CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
-```
-
-`jetbot backend failed: No module named 'jetbot'`가 나오면 호스트 Python의 `PYTHONPATH`에 JetBot repo가 잡히지 않은 상태입니다. 위처럼 `JETBOT_REPO_PATH=$HOME/jetbot`을 지정하세요. 그래도 실패하면 서버는 OpenCV CSI 파이프라인으로 fallback하며, `/tmp/ccai_csi_mjpeg.log`에 `backend=opencv`, `opencv open failed`, `opencv read failed` 중 어디에서 멈췄는지 남깁니다.
 
 `curl` 저장 옵션은 ASCII 하이픈 2개인 `--output`을 써야 합니다. `—output`처럼 긴 대시가 들어가면 URL 파싱 오류가 납니다.
 

@@ -46,18 +46,11 @@ class OtaAgentNode(Node):
         return ""
 
     def apply_manifest(self, manifest: Dict) -> None:
-        commands = manifest.get("commands", [])
-        if not isinstance(commands, list):
-            self.report("ota manifest rejected: commands must be a list")
-            return
         workdir = str(self.get_parameter("workdir").value)
-        for command in commands:
-            if not isinstance(command, str):
-                self.report("ota command skipped: non-string command")
-                continue
-            self.report(f"ota running: {command}")
+        for step in ["git pull --ff-only", "./scripts/container_build.sh"]:
+            self.report(f"ota running: {step}")
             result = subprocess.run(
-                command.split(),
+                step.split(),
                 cwd=workdir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -66,12 +59,12 @@ class OtaAgentNode(Node):
                 check=False,
             )
             if result.returncode != 0:
-                self.report(f"ota failed: {command}: {result.stderr[-500:]}")
+                self.report(f"ota failed: {step}: {result.stderr[-500:]}")
                 return
         version_file = Path(str(self.get_parameter("current_version_file").value))
         version_file.parent.mkdir(parents=True, exist_ok=True)
         version_file.write_text(str(manifest.get("version", "")), encoding="utf-8")
-        self.report("ota applied")
+        self.report("ota built; restart the container to run the updated code (./scripts/host_docker_update.sh or docker restart)")
 
     def report(self, text: str) -> None:
         self.event_pub.publish(String(data=text))

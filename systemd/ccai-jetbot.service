@@ -1,16 +1,20 @@
 [Unit]
-Description=CCAI JetBot ROS Patrol
-After=network-online.target
+Description=CCAI JetBot ROS Patrol (Docker)
+After=network-online.target docker.service
 Wants=network-online.target
+Requires=docker.service
 
 [Service]
-Type=simple
-User=jetson
-WorkingDirectory=/home/jetson/ccai_jetbot_ros
-EnvironmentFile=-/home/jetson/ccai_jetbot_ros/.env
-ExecStart=/home/jetson/ccai_jetbot_ros/scripts/run_patrol.sh
-Restart=always
-RestartSec=5
+Type=oneshot
+RemainAfterExit=yes
+User=roboat
+WorkingDirectory=/home/roboat/work/ros2_ws/ccai_jetbot_ros
+EnvironmentFile=-/home/roboat/work/ros2_ws/ccai_jetbot_ros/.env
+Environment=CCAI_SAFE_START=0
+ExecStart=/home/roboat/work/ros2_ws/ccai_jetbot_ros/scripts/host_docker_run.sh
+ExecStop=/usr/bin/docker stop ccai-jetbot
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target

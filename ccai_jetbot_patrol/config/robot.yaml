@@ -37,9 +37,9 @@ camera_node:
     camera_device: ""
     camera_url: ""
     camera_url_timeout_seconds: 1.5
-    camera_mode: "usb"
+    camera_mode: "csi"
     camera_backend: "auto"
-    use_gstreamer: false
+    use_gstreamer: true
     force_v4l2: true
     capture_width: 640
     capture_height: 480

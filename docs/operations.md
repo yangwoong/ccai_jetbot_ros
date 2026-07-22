@@ -2,13 +2,13 @@
 
 ## Jetson 배포
 
-1. Ubuntu 22.04 또는 ROS2 Humble 컨테이너 환경을 준비합니다.
-2. 저장소를 `/home/jetson/ccai_jetbot_ros`에 클론합니다.
-3. `scripts/install_jetson_humble.sh`를 실행합니다.
-4. `.env.example`을 참고해 `.env`를 만들거나 `ccai_jetbot_patrol/config/robot.yaml`의 H200 주소와 텔레그램 토큰을 설정합니다.
-5. `colcon build --symlink-install` 후 `ros2 launch ccai_jetbot_patrol patrol.launch.py`를 실행합니다.
+이 프로젝트의 표준 배포 방식은 Docker입니다. 저장소를 `/home/roboat/work/ros2_ws/ccai_jetbot_ros`에 클론한 뒤 `.env.example`을 참고해 `.env`를 만들고, `docs/docker_host_operations.md`의 절차(최초 실행, 부팅 시 자동 실행, 코드 업데이트)를 따르세요. 하드웨어/카메라 설정은 `docs/hardware_jetbot.md`를 참고합니다.
 
-## systemd 등록
+Docker 없이 Jetson에 ROS2 Humble을 직접 설치해서 실행하려면 `scripts/install_jetson_humble.sh` → `colcon build --symlink-install` → `ros2 launch ccai_jetbot_patrol patrol.launch.py` 순서로 진행할 수 있지만, 권장 경로가 아니며 이 문서의 나머지 안내는 Docker 배포를 기준으로 합니다.
+
+## systemd 등록 (부팅 시 자동 실행)
+
+`systemd/ccai-jetbot.service`는 부팅 후 Docker가 뜨면 `host_docker_run.sh`를 자동 실행합니다. 자세한 설정은 `docs/docker_host_operations.md`의 "부팅 시 자동 실행" 절을 참고하세요.
 
 ```bash
 sudo cp systemd/ccai-jetbot.service /etc/systemd/system/

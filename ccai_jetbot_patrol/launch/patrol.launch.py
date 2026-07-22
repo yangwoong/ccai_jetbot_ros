@@ -14,7 +14,7 @@ def env_enabled(name: str, default: bool) -> bool:
 
 
 def camera_parameters():
-    mode = os.environ.get("CCAI_CAMERA_MODE", "usb").lower()
+    mode = os.environ.get("CCAI_CAMERA_MODE", "csi").lower()
     params = {
         "camera_mode": mode,
         "use_gstreamer": mode in {"csi", "auto"},
