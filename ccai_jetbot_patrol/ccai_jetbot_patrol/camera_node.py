@@ -23,9 +23,15 @@ class UrlSnapshotCapture:
         return bool(self.url)
 
     def read(self):
-        response = self.requests.get(self.url, timeout=self.timeout)
-        response.raise_for_status()
+        try:
+            response = self.requests.get(self.url, timeout=self.timeout)
+        except self.requests.exceptions.RequestException:
+            return False, None
+        if response.status_code != 200:
+            return False, None
         array = self.np.frombuffer(response.content, dtype=self.np.uint8)
+        if array.size == 0:
+            return False, None
         frame = self.cv2.imdecode(array, self.cv2.IMREAD_COLOR)
         return frame is not None, frame
 
