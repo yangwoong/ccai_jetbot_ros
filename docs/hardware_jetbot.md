@@ -155,6 +155,23 @@ CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_
 
 CSI 모드는 기본적으로 10회만 open/probe를 재시도합니다. Argus 로그에 `Sensor could not be opened` 또는 `V4L2Device not available`이 반복되면 CSI 센서/케이블/Jetson 드라이버 쪽 문제로 보고 USB 카메라 운용을 먼저 확인하세요.
 
+Docker 내부 CSI가 `Failed to create CaptureSession` 또는 `opened=true/read=false`로 실패하지만 호스트의 JetBot 공개 코드는 영상이 나오는 경우, CSI를 호스트에서 열고 Docker ROS는 MJPEG URL로 받습니다.
+
+```bash
+# 호스트에서 CSI를 MJPEG로 송출
+./scripts/host_csi_mjpeg_start.sh
+
+# Docker ROS 카메라 노드는 URL을 구독
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=url ./scripts/host_docker_run.sh
+```
+
+확인:
+
+```bash
+curl http://127.0.0.1:8090/health
+curl http://127.0.0.1:8080/api/camera.jpg --output /tmp/jetbot.jpg
+```
+
 카메라 토픽 확인:
 
 ```bash

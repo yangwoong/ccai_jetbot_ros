@@ -14,6 +14,7 @@ class CameraNode(Node):
         self.declare_parameter("enabled", True)
         self.declare_parameter("camera_index", 0)
         self.declare_parameter("camera_device", "")
+        self.declare_parameter("camera_url", "")
         self.declare_parameter("camera_mode", "usb")
         self.declare_parameter("camera_backend", "auto")
         self.declare_parameter("use_gstreamer", False)
@@ -101,6 +102,9 @@ class CameraNode(Node):
             )
             self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
+        elif backend == "url":
+            self.active_pipeline = str(self.get_parameter("camera_url").value)
+            self.capture = self.cv2.VideoCapture(self.active_pipeline)
         elif backend == "gst_v4l2_any":
             pipeline = (
                 "v4l2src device={0} ! videoconvert "
@@ -202,6 +206,8 @@ class CameraNode(Node):
         if mode == "csi":
             candidates.extend(["csi_jetbot", "csi_jetcam", "csi_gstreamer"])
             return candidates
+        if mode in {"url", "mjpeg", "http"}:
+            return ["url"]
 
         if mode == "auto" and (bool(self.get_parameter("use_gstreamer").value) or os.path.exists("/tmp/argus_socket")):
             candidates.extend(["csi_jetbot", "csi_jetcam", "csi_gstreamer"])
@@ -336,6 +342,7 @@ class CameraNode(Node):
             "enabled": self.camera_enabled(),
             "mode": str(self.get_parameter("camera_mode").value),
             "device": self.camera_source(),
+            "url": str(self.get_parameter("camera_url").value),
             "backend": self.active_backend,
             "pipeline": self.active_pipeline,
             "csi_sensor_id": int(self.get_parameter("csi_sensor_id").value),

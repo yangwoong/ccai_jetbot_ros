@@ -32,6 +32,7 @@ fi
 CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA:-1}"
 FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN:-1}"
 CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE:-}"
+CCAI_CAMERA_URL="${CCAI_CAMERA_URL:-}"
 CCAI_CAMERA_RETRY_SECONDS="${CCAI_CAMERA_RETRY_SECONDS:-}"
 CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT:-}"
 CCAI_CSI_SENSOR_ID="${CCAI_CSI_SENSOR_ID:-}"
@@ -47,6 +48,9 @@ if [ -z "${CCAI_CAMERA_MODE:-}" ]; then
   else
     CCAI_CAMERA_MODE="usb"
   fi
+fi
+if [ "${CCAI_CAMERA_MODE}" = "url" ] && [ -z "${CCAI_CAMERA_URL}" ]; then
+  CCAI_CAMERA_URL="http://127.0.0.1:${CCAI_CSI_MJPEG_PORT:-8090}/stream.mjpg"
 fi
 DOCKER_PRIVILEGED="${DOCKER_PRIVILEGED:-0}"
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-}"
@@ -105,6 +109,7 @@ docker run -d \
   -e CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA}" \
   -e CCAI_CAMERA_MODE="${CCAI_CAMERA_MODE}" \
   -e CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE}" \
+  -e CCAI_CAMERA_URL="${CCAI_CAMERA_URL}" \
   -e CCAI_CAMERA_RETRY_SECONDS="${CCAI_CAMERA_RETRY_SECONDS}" \
   -e CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT}" \
   -e CCAI_CSI_SENSOR_ID="${CCAI_CSI_SENSOR_ID}" \
@@ -122,6 +127,6 @@ docker run -d \
   bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
-echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} argus_mount=${CCAI_ARGUS_MOUNT_MODE} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
+echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} argus_mount=${CCAI_ARGUS_MOUNT_MODE} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"

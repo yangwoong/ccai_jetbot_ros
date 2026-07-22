@@ -28,6 +28,9 @@ def camera_parameters():
     device = os.environ.get("CCAI_CAMERA_DEVICE")
     if device:
         params["camera_device"] = device
+    url = os.environ.get("CCAI_CAMERA_URL")
+    if url:
+        params["camera_url"] = url
     retry_limit = os.environ.get("CCAI_CAMERA_RETRY_LIMIT")
     if retry_limit:
         params["max_open_attempts"] = int(retry_limit)
