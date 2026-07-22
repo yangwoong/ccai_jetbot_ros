@@ -47,11 +47,15 @@ CCAI_CSI_CAPTURE_WIDTH="${CCAI_CSI_CAPTURE_WIDTH:-}"
 CCAI_CSI_CAPTURE_HEIGHT="${CCAI_CSI_CAPTURE_HEIGHT:-}"
 CCAI_CSI_FPS="${CCAI_CSI_FPS:-}"
 CCAI_CSI_FLIP_METHOD="${CCAI_CSI_FLIP_METHOD:-}"
+# Default the camera backend off whichever flag actually gates the camera_node
+# process (CCAI_ENABLE_CAMERA), not CCAI_SAFE_START directly. Otherwise
+# `CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ...` (the documented incremental
+# safe-mode steps) would still silently end up with camera_mode=disabled.
 if [ -z "${CCAI_CAMERA_MODE:-}" ]; then
-  if [ "${CCAI_SAFE_START}" = "1" ]; then
-    CCAI_CAMERA_MODE="disabled"
-  else
+  if [ "${CCAI_ENABLE_CAMERA}" = "1" ]; then
     CCAI_CAMERA_MODE="csi"
+  else
+    CCAI_CAMERA_MODE="disabled"
   fi
 fi
 DOCKER_PRIVILEGED="${DOCKER_PRIVILEGED:-0}"

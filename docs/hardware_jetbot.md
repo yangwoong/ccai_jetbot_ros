@@ -66,6 +66,12 @@ jetbot_hardware_node:
     right_trim: 1.0
 ```
 
+### 속도 스케일 맞추기 (순찰 중 바퀴가 거의 안 도는 문제)
+
+`jetbot_hardware_node`는 `/cmd_vel`을 받으면 `max_linear_speed`/`max_angular_speed`로 나눠서 -1..1로 정규화한 뒤, 다시 `motor_output_scale`을 곱해서 실제 PWM duty로 변환합니다. `patrol_node`(`linear_speed`, `angular_speed`)와 `vision_nav_node`(`linear_speed`, `turn_speed`, `max_angular_speed`)가 실제로 발행하는 속도값이 `max_linear_speed`/`max_angular_speed`보다 훨씬 작으면, 정규화 단계에서 이미 몇 % 수준으로 줄어들고 여기에 `motor_output_scale`이 다시 곱해져서 PWM duty가 모터 기동 토크에도 못 미치는 수준까지 떨어집니다 — 소리만 나고 거의 안 도는 증상이 이 경우입니다.
+
+기본값은 `patrol_node`/`vision_nav_node`의 속도값과 맞춰뒀습니다 (`max_linear_speed: 0.05`, `max_angular_speed: 0.22`이면 순찰 기본 속도가 정규화 후 약 70~80% 수준이 되어 `motor_output_scale: 0.35`를 곱해도 duty가 25~28% 정도 나옵니다). `linear_speed`/`angular_speed`/`turn_speed`를 바꾸면 `max_linear_speed`/`max_angular_speed`도 같이 조정해야 이 비율이 유지됩니다. 여전히 너무 느리면 `motor_output_scale`을 올리세요(순찰 중 안전을 위한 상한값이므로 실내 테스트는 바퀴를 들어 올린 상태로 하세요).
+
 ## OLED와 LED
 
 Waveshare JetBot AI Kit의 OLED는 SSD1306 계열 128x32 디스플레이입니다. 기본 설정은 I2C bus 자동 탐색입니다.
@@ -90,7 +96,7 @@ OLED가 보통 `0x3c`로 보이면 정상입니다.
 
 ## 카메라
 
-Waveshare JetBot AI Kit은 CSI 카메라를 씁니다. 기본값은 CSI이고, `host_docker_run.sh`가 안전 모드가 아닐 때 `CCAI_CAMERA_MODE=csi`, `--runtime nvidia`, `--ipc host`, `-v /tmp:/tmp`를 자동으로 구성합니다. 별도 설정 없이 아래처럼 실행하면 됩니다.
+Waveshare JetBot AI Kit은 CSI 카메라를 씁니다. `CCAI_ENABLE_CAMERA=1`이면 (안전 모드 여부와 무관하게) `CCAI_CAMERA_MODE`를 따로 지정하지 않는 한 기본값이 CSI이고, `host_docker_run.sh`가 `--runtime nvidia`, `--ipc host`, `-v /tmp:/tmp`를 자동으로 구성합니다. 별도 설정 없이 아래처럼 실행하면 됩니다.
 
 ```bash
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ./scripts/host_docker_run.sh

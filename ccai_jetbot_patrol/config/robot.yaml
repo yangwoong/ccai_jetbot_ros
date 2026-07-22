@@ -18,8 +18,8 @@ jetbot_hardware_node:
     motor_i2c_address: 0
     left_motor_channel: 1
     right_motor_channel: 2
-    max_linear_speed: 0.5
-    max_angular_speed: 2.0
+    max_linear_speed: 0.05
+    max_angular_speed: 0.22
     motor_output_scale: 0.35
     left_trim: 1.0
     right_trim: 1.0
