@@ -17,12 +17,14 @@ class CameraNode(Node):
         self.declare_parameter("height", 240)
         self.declare_parameter("fps", 5.0)
         self.declare_parameter("jpeg_quality", 45)
+        self.declare_parameter("reopen_after_failures", 5)
         self.declare_parameter("output_topic", "/image_raw/compressed")
 
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.publisher = self.create_publisher(CompressedImage, str(self.get_parameter("output_topic").value), 2)
         self.cv2 = None
         self.capture = None
+        self.failed_reads = 0
 
         if bool(self.get_parameter("enabled").value):
             self.open_camera()
@@ -60,11 +62,13 @@ class CameraNode(Node):
             self.capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, width)
             self.capture.set(self.cv2.CAP_PROP_FRAME_HEIGHT, height)
             self.capture.set(self.cv2.CAP_PROP_FPS, float(self.get_parameter("fps").value))
+            self.capture.set(self.cv2.CAP_PROP_BUFFERSIZE, 1)
 
         if not self.capture or not self.capture.isOpened():
             self.publish_event("camera open failed")
             self.capture = None
         else:
+            self.failed_reads = 0
             self.publish_event("camera opened")
 
     def capture_once(self) -> None:
@@ -72,8 +76,12 @@ class CameraNode(Node):
             return
         ok, frame = self.capture.read()
         if not ok or frame is None:
+            self.failed_reads += 1
             self.publish_event_throttled("camera frame read failed")
+            if self.failed_reads >= int(self.get_parameter("reopen_after_failures").value):
+                self.reopen_camera()
             return
+        self.failed_reads = 0
 
         width = int(self.get_parameter("width").value)
         height = int(self.get_parameter("height").value)
@@ -99,6 +107,14 @@ class CameraNode(Node):
         if not hasattr(self, "_last_event") or now - self._last_event > 5.0:
             self._last_event = now
             self.publish_event(text)
+
+    def reopen_camera(self) -> None:
+        self.publish_event("camera reopening after repeated read failures")
+        if self.capture is not None:
+            self.capture.release()
+            self.capture = None
+        time.sleep(0.5)
+        self.open_camera()
 
     def destroy_node(self) -> bool:
         if self.capture is not None:

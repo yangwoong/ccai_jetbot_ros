@@ -18,6 +18,7 @@ docker run -d \
   --name "${CONTAINER_NAME}" \
   --network host \
   --privileged \
+  -e ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}" \
   -v "${HOST_WS}:/home/workspace" \
   "${DOCKER_ARGS[@]}" \
   -w "${WORKDIR}" \

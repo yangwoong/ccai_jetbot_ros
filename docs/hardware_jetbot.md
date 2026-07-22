@@ -24,7 +24,7 @@ ros2 launch ccai_jetbot_patrol patrol.launch.py
 
 ## 모터
 
-`jetbot_hardware_node`는 기본적으로 `auto` 모드입니다. 먼저 NVIDIA JetBot Python 패키지의 `jetbot.Robot`을 시도하고, 없으면 I2C PCA9685 MotorHAT 직접 제어로 fallback합니다.
+`jetbot_hardware_node`는 기본적으로 `auto` 모드입니다. 먼저 NVIDIA JetBot Python 패키지의 `jetbot.Robot`을 시도하고, 없으면 I2C PCA9685 MotorHAT 직접 제어로 fallback합니다. 이 fallback은 `smbus` Python 모듈이 없어도 `/dev/i2c-*` ioctl로 동작합니다.
 
 컨테이너 안에서 확인:
 
@@ -32,15 +32,15 @@ ros2 launch ccai_jetbot_patrol patrol.launch.py
 python3 -c "from jetbot import Robot; print('jetbot ok')"
 ```
 
-실패해도 `pca9685 motor backend ready` 로그가 나오면 모터 제어는 계속 동작할 수 있습니다. `pca9685 motor backend unavailable`이면 I2C 접근 또는 `python3-smbus`가 없는 상태입니다.
+실패해도 `pca9685 motor backend ready` 로그가 나오면 모터 제어는 계속 동작할 수 있습니다. `pca9685 motor backend unavailable on bus=..., address=...`가 모든 bus/address에서 나오면 I2C 장치가 보이지 않는 상태입니다.
 
 I2C 확인:
 
 ```bash
-docker exec ccai-jetbot bash -c 'i2cdetect -y 1'
+./scripts/host_docker_diag.sh
 ```
 
-MotorHAT/PCA9685가 보통 `0x60`으로 보이면 정상입니다.
+MotorHAT/PCA9685가 보통 `0x60` 또는 `0x40`으로 보이면 정상입니다.
 
 수동 모터 테스트:
 
@@ -58,8 +58,8 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 jetbot_hardware_node:
   ros__parameters:
     motor_backend: "auto"
-    motor_i2c_bus: 1
-    motor_i2c_address: 96
+    motor_i2c_bus: -1
+    motor_i2c_address: 0
     left_motor_channel: 1
     right_motor_channel: 2
     left_trim: 1.0
@@ -68,13 +68,13 @@ jetbot_hardware_node:
 
 ## OLED와 LED
 
-Waveshare JetBot AI Kit의 OLED는 SSD1306 계열 128x32 디스플레이입니다. 기본 설정은 I2C bus 1입니다.
+Waveshare JetBot AI Kit의 OLED는 SSD1306 계열 128x32 디스플레이입니다. 기본 설정은 I2C bus 자동 탐색입니다.
 
 ```yaml
 jetbot_hardware_node:
   ros__parameters:
     oled_enabled: true
-    oled_bus: 1
+    oled_bus: -1
     status_led_pin: -1
 ```
 
@@ -83,7 +83,7 @@ jetbot_hardware_node:
 I2C 확인:
 
 ```bash
-i2cdetect -y 1
+./scripts/host_docker_diag.sh
 ```
 
 OLED가 보통 `0x3c`로 보이면 정상입니다.

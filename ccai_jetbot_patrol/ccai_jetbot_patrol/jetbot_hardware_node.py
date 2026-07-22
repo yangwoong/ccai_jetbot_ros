@@ -1,3 +1,6 @@
+import fcntl
+import glob
+import os
 import socket
 import time
 
@@ -26,15 +29,54 @@ class JetBotMotorBackend(MotorBackend):
         self.robot.right_motor.value = right
 
 
+class RawI2cBus:
+    I2C_SLAVE = 0x0703
+
+    def __init__(self, bus: int) -> None:
+        self.path = "/dev/i2c-{0}".format(bus)
+        self.fd = os.open(self.path, os.O_RDWR)
+        self.current_address = None
+
+    def select(self, address: int) -> None:
+        if self.current_address != address:
+            fcntl.ioctl(self.fd, self.I2C_SLAVE, address)
+            self.current_address = address
+
+    def write_byte_data(self, address: int, register: int, value: int) -> None:
+        self.select(address)
+        os.write(self.fd, bytes([register & 0xFF, value & 0xFF]))
+
+    def read_byte_data(self, address: int, register: int) -> int:
+        self.select(address)
+        os.write(self.fd, bytes([register & 0xFF]))
+        return os.read(self.fd, 1)[0]
+
+    def write_i2c_block_data(self, address: int, register: int, values) -> None:
+        self.select(address)
+        payload = [register & 0xFF]
+        payload.extend([int(value) & 0xFF for value in values])
+        os.write(self.fd, bytes(payload))
+
+    def close(self) -> None:
+        os.close(self.fd)
+
+
+def open_i2c_bus(bus: int):
+    try:
+        import smbus
+
+        return smbus.SMBus(bus)
+    except Exception:
+        return RawI2cBus(bus)
+
+
 class Pca9685:
     MODE1 = 0x00
     PRESCALE = 0xFE
     LED0_ON_L = 0x06
 
     def __init__(self, bus: int, address: int = 0x60) -> None:
-        import smbus
-
-        self.bus = smbus.SMBus(bus)
+        self.bus = open_i2c_bus(bus)
         self.address = address
         self.bus.write_byte_data(self.address, self.MODE1, 0x00)
         time.sleep(0.01)
@@ -163,26 +205,37 @@ class OledDisplay:
         self.font = None
         if not enabled:
             return
+        buses = candidate_i2c_buses(bus)
+        last_error = None
+        for candidate_bus in buses:
+            self.display = self.create_adafruit_display(candidate_bus)
+            if self.display is not None:
+                return
+            try:
+                self.display = RawSsd1306Display(candidate_bus)
+                self.logger.info("raw OLED fallback ready, bus={0}, address=0x3c".format(candidate_bus))
+                return
+            except Exception as exc:
+                last_error = exc
+                self.logger.warning("raw OLED fallback unavailable on bus={0}: {1}".format(candidate_bus, exc))
+        if last_error is not None:
+            self.logger.warning("OLED unavailable: {0}".format(last_error))
+
+    def create_adafruit_display(self, bus: int):
         try:
             import Adafruit_SSD1306
             from PIL import Image, ImageDraw, ImageFont
 
-            self.display = Adafruit_SSD1306.SSD1306_128_32(rst=None, i2c_bus=bus, gpio=1)
-            self.display.begin()
-            self.display.clear()
-            self.display.display()
-            self.image = Image.new("1", (self.display.width, self.display.height))
+            display = Adafruit_SSD1306.SSD1306_128_32(rst=None, i2c_bus=bus, gpio=1)
+            display.begin()
+            display.clear()
+            display.display()
+            self.image = Image.new("1", (display.width, display.height))
             self.draw = ImageDraw.Draw(self.image)
             self.font = ImageFont.load_default()
+            self.logger.info("Adafruit OLED ready, bus={0}".format(bus))
+            return display
         except Exception as exc:
-            self.logger.warning("OLED unavailable: {0}".format(exc))
-            self.display = self.create_raw_display(bus)
-
-    def create_raw_display(self, bus: int):
-        try:
-            return RawSsd1306Display(bus)
-        except Exception as exc:
-            self.logger.warning("raw OLED fallback unavailable: {0}".format(exc))
             return None
 
     def show(self, line1: str, line2: str, line3: str = "") -> None:
@@ -213,10 +266,9 @@ class RawSsd1306Display:
     ADDRESS = 0x3C
 
     def __init__(self, bus: int) -> None:
-        import smbus
         from PIL import Image, ImageDraw, ImageFont
 
-        self.bus = smbus.SMBus(bus)
+        self.bus = open_i2c_bus(bus)
         self.width = 128
         self.height = 32
         self.image = Image.new("1", (self.width, self.height))
@@ -299,8 +351,8 @@ class JetBotHardwareNode(Node):
         self.declare_parameter("enabled", True)
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("motor_backend", "auto")
-        self.declare_parameter("motor_i2c_bus", 1)
-        self.declare_parameter("motor_i2c_address", 0x60)
+        self.declare_parameter("motor_i2c_bus", -1)
+        self.declare_parameter("motor_i2c_address", 0)
         self.declare_parameter("left_motor_channel", 1)
         self.declare_parameter("right_motor_channel", 2)
         self.declare_parameter("max_linear_speed", 0.25)
@@ -311,7 +363,7 @@ class JetBotHardwareNode(Node):
         self.declare_parameter("status_led_pin", -1)
         self.declare_parameter("status_led_active_high", True)
         self.declare_parameter("oled_enabled", True)
-        self.declare_parameter("oled_bus", 1)
+        self.declare_parameter("oled_bus", -1)
         self.declare_parameter("oled_refresh_seconds", 2.0)
 
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
@@ -353,17 +405,39 @@ class JetBotHardwareNode(Node):
                 if backend == "jetbot":
                     return NullMotorBackend(self.get_logger())
         if backend in {"auto", "pca9685"}:
-            try:
-                return Pca9685MotorBackend(
-                    int(self.get_parameter("motor_i2c_bus").value),
-                    int(self.get_parameter("motor_i2c_address").value),
-                    int(self.get_parameter("left_motor_channel").value),
-                    int(self.get_parameter("right_motor_channel").value),
-                    self.get_logger(),
-                )
-            except Exception as exc:
-                self.get_logger().warning("pca9685 motor backend unavailable: {0}".format(exc))
+            for bus in self.motor_candidate_buses():
+                for address in self.motor_candidate_addresses():
+                    try:
+                        return Pca9685MotorBackend(
+                            bus,
+                            address,
+                            int(self.get_parameter("left_motor_channel").value),
+                            int(self.get_parameter("right_motor_channel").value),
+                            self.get_logger(),
+                        )
+                    except Exception as exc:
+                        self.get_logger().warning(
+                            "pca9685 motor backend unavailable on bus={0}, address=0x{1:02x}: {2}".format(bus, address, exc)
+                        )
         return NullMotorBackend(self.get_logger())
+
+    def motor_candidate_buses(self):
+        configured = int(self.get_parameter("motor_i2c_bus").value)
+        if configured >= 0:
+            return [configured]
+        buses = []
+        for path in sorted(glob.glob("/dev/i2c-*")):
+            try:
+                buses.append(int(path.rsplit("-", 1)[1]))
+            except ValueError:
+                pass
+        return buses or [1, 0]
+
+    def motor_candidate_addresses(self):
+        configured = int(self.get_parameter("motor_i2c_address").value)
+        if configured > 0:
+            return [configured]
+        return [0x60, 0x40]
 
     def on_cmd_vel(self, msg: Twist) -> None:
         max_linear = max(float(self.get_parameter("max_linear_speed").value), 0.01)
@@ -406,6 +480,18 @@ class JetBotHardwareNode(Node):
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
     return max(minimum, min(maximum, value))
+
+
+def candidate_i2c_buses(configured: int):
+    if configured >= 0:
+        return [configured]
+    buses = []
+    for path in sorted(glob.glob("/dev/i2c-*")):
+        try:
+            buses.append(int(path.rsplit("-", 1)[1]))
+        except ValueError:
+            pass
+    return buses or [1, 0]
 
 
 def get_ip_address() -> str:

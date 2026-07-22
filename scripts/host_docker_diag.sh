@@ -10,7 +10,7 @@ echo
 echo "[container] environment and devices"
 docker exec "${CONTAINER_NAME}" bash -c '
 set +e
-echo "ROS_LOCALHOST_ONLY=${ROS_LOCALHOST_ONLY:-unset}"
+echo "ROS_LOCALHOST_ONLY(exec env)=${ROS_LOCALHOST_ONLY:-unset}"
 echo "ROS_DISTRO=${ROS_DISTRO:-unset}"
 echo "Python: $(python3 --version 2>&1)"
 echo "I2C devices:"
@@ -39,11 +39,11 @@ echo "[container] i2c scan"
 docker exec "${CONTAINER_NAME}" bash -c '
 set +e
 if command -v i2cdetect >/dev/null 2>&1; then
-  for bus in 0 1; do
-    if [ -e "/dev/i2c-${bus}" ]; then
-      echo "i2cdetect -y ${bus}"
-      i2cdetect -y "${bus}" || true
-    fi
+  for dev in /dev/i2c-*; do
+    [ -e "${dev}" ] || continue
+    bus="${dev##*-}"
+    echo "i2cdetect -y ${bus}"
+    i2cdetect -y "${bus}" || true
   done
 else
   echo "i2cdetect not installed"
@@ -62,4 +62,3 @@ if command -v curl >/dev/null 2>&1; then
 else
   echo "curl not installed on host"
 fi
-
