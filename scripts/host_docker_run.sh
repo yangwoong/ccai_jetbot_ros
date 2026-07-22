@@ -4,7 +4,7 @@ set -euo pipefail
 CONTAINER_NAME="${CONTAINER_NAME:-ccai-jetbot}"
 HOST_WS="${HOST_WS:-/home/roboat/work/ros2_ws}"
 REPO_DIR="${REPO_DIR:-ccai_jetbot_ros}"
-IMAGE="${IMAGE:-osrf/ros:humble-ros-base}"
+IMAGE="${IMAGE:-dustynv/ros:humble-desktop-l4t-r32.7.1}"
 WORKDIR="/home/workspace/${REPO_DIR}"
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
