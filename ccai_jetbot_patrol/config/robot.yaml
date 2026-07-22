@@ -41,6 +41,12 @@ camera_node:
     force_v4l2: true
     capture_width: 640
     capture_height: 480
+    csi_sensor_id: 0
+    csi_sensor_mode: 3
+    csi_capture_width: 816
+    csi_capture_height: 616
+    csi_fps: 30
+    csi_flip_method: 0
     width: 320
     height: 240
     fps: 5.0

@@ -34,6 +34,24 @@ def camera_parameters():
     retry_seconds = os.environ.get("CCAI_CAMERA_RETRY_SECONDS")
     if retry_seconds:
         params["capture_retry_seconds"] = float(retry_seconds)
+    csi_sensor_id = os.environ.get("CCAI_CSI_SENSOR_ID")
+    if csi_sensor_id:
+        params["csi_sensor_id"] = int(csi_sensor_id)
+    csi_sensor_mode = os.environ.get("CCAI_CSI_SENSOR_MODE")
+    if csi_sensor_mode:
+        params["csi_sensor_mode"] = int(csi_sensor_mode)
+    csi_capture_width = os.environ.get("CCAI_CSI_CAPTURE_WIDTH")
+    if csi_capture_width:
+        params["csi_capture_width"] = int(csi_capture_width)
+    csi_capture_height = os.environ.get("CCAI_CSI_CAPTURE_HEIGHT")
+    if csi_capture_height:
+        params["csi_capture_height"] = int(csi_capture_height)
+    csi_fps = os.environ.get("CCAI_CSI_FPS")
+    if csi_fps:
+        params["csi_fps"] = int(csi_fps)
+    csi_flip_method = os.environ.get("CCAI_CSI_FLIP_METHOD")
+    if csi_flip_method:
+        params["csi_flip_method"] = int(csi_flip_method)
     return params
 
 

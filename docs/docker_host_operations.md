@@ -67,6 +67,13 @@ Jetson CSI 카메라는 Argus를 사용하므로, USB `/dev/video0`와 분리해
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
 ```
 
+CSI 센서는 NVIDIA JetBot 기본 파이프라인인 `sensor-mode=3`, `816x616`, `NV12`, `30fps`를 먼저 시도합니다. ROS 카메라 노드와 별개로 CSI만 확인하려면:
+
+```bash
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled ./scripts/host_docker_run.sh
+./scripts/host_csi_probe.sh
+```
+
 USB 카메라를 연결한 뒤 ROS 카메라 노드와 별개로 OpenCV 장치 접근만 확인할 수 있습니다.
 
 ```bash

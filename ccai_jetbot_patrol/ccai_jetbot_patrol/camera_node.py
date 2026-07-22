@@ -20,6 +20,12 @@ class CameraNode(Node):
         self.declare_parameter("force_v4l2", True)
         self.declare_parameter("capture_width", 640)
         self.declare_parameter("capture_height", 480)
+        self.declare_parameter("csi_sensor_id", 0)
+        self.declare_parameter("csi_sensor_mode", 3)
+        self.declare_parameter("csi_capture_width", 816)
+        self.declare_parameter("csi_capture_height", 616)
+        self.declare_parameter("csi_fps", 30)
+        self.declare_parameter("csi_flip_method", 0)
         self.declare_parameter("width", 320)
         self.declare_parameter("height", 240)
         self.declare_parameter("fps", 5.0)
@@ -71,19 +77,24 @@ class CameraNode(Node):
         source = self.camera_source()
         backend = self.next_backend()
         self.active_backend = backend
-        if backend == "csi_gstreamer":
-            pipeline = (
-                "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 "
-                "! nvvidconv flip-method=0 ! video/x-raw, width={0}, height={1}, format=BGRx "
-                "! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(capture_width, capture_height)
+        if backend == "csi_jetbot":
+            pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
-        elif backend == "csi_gstreamer_legacy":
+        elif backend == "csi_jetcam":
+            pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False)
+            self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
+        elif backend == "csi_gstreamer":
             pipeline = (
-                "nvarguscamerasrc sensor-id={0} ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 "
-                "! nvvidconv ! video/x-raw, format=BGRx ! videoconvert "
-                "! video/x-raw, width={1}, height={2}, format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(index, capture_width, capture_height)
+                "nvarguscamerasrc sensor-id={0} ! video/x-raw(memory:NVMM), width=1280, height=720, "
+                "format=(string)NV12, framerate=(fraction)30/1 ! nvvidconv flip-method={1} "
+                "! video/x-raw, width=(int){2}, height=(int){3}, format=(string)BGRx "
+                "! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
+            ).format(
+                int(self.get_parameter("csi_sensor_id").value),
+                int(self.get_parameter("csi_flip_method").value),
+                int(self.get_parameter("width").value),
+                int(self.get_parameter("height").value),
+            )
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_any":
             pipeline = (
@@ -175,11 +186,11 @@ class CameraNode(Node):
         mode = str(self.get_parameter("camera_mode").value).lower()
         candidates = []
         if mode == "csi":
-            candidates.extend(["csi_gstreamer", "csi_gstreamer_legacy"])
+            candidates.extend(["csi_jetbot", "csi_jetcam", "csi_gstreamer"])
             return candidates
 
         if mode == "auto" and (bool(self.get_parameter("use_gstreamer").value) or os.path.exists("/tmp/argus_socket")):
-            candidates.extend(["csi_gstreamer", "csi_gstreamer_legacy"])
+            candidates.extend(["csi_jetbot", "csi_jetcam", "csi_gstreamer"])
 
         candidates.extend([
             "gst_v4l2_any",
@@ -309,6 +320,8 @@ class CameraNode(Node):
             "mode": str(self.get_parameter("camera_mode").value),
             "device": self.camera_source(),
             "backend": self.active_backend,
+            "csi_sensor_id": int(self.get_parameter("csi_sensor_id").value),
+            "csi_sensor_mode": int(self.get_parameter("csi_sensor_mode").value),
             "failed_reads": self.failed_reads,
             "last_error": self.last_error,
             "retry_seconds": float(self.get_parameter("capture_retry_seconds").value),
@@ -328,6 +341,26 @@ class CameraNode(Node):
         if device:
             return device
         return "/dev/video{0}".format(int(self.get_parameter("camera_index").value))
+
+    def csi_pipeline(self, include_sensor_id: bool, include_sensor_mode: bool) -> str:
+        source = "nvarguscamerasrc"
+        if include_sensor_id:
+            source += " sensor-id={0}".format(int(self.get_parameter("csi_sensor_id").value))
+        if include_sensor_mode:
+            source += " sensor-mode={0}".format(int(self.get_parameter("csi_sensor_mode").value))
+        return (
+            "{0} ! video/x-raw(memory:NVMM), width={1}, height={2}, format=(string)NV12, framerate=(fraction){3}/1 "
+            "! nvvidconv flip-method={4} ! video/x-raw, width=(int){5}, height=(int){6}, format=(string)BGRx "
+            "! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
+        ).format(
+            source,
+            int(self.get_parameter("csi_capture_width").value),
+            int(self.get_parameter("csi_capture_height").value),
+            int(self.get_parameter("csi_fps").value),
+            int(self.get_parameter("csi_flip_method").value),
+            int(self.get_parameter("width").value),
+            int(self.get_parameter("height").value),
+        )
 
     def destroy_node(self) -> bool:
         if self.capture is not None:

@@ -130,12 +130,25 @@ camera_node:
   ros__parameters:
     camera_mode: "csi"
     use_gstreamer: true
+    csi_sensor_mode: 3
+    csi_capture_width: 816
+    csi_capture_height: 616
+    csi_fps: 30
 ```
 
 CSI 카메라 컨테이너 실행에는 `/tmp/argus_socket` 접근과 NVIDIA 런타임이 필요할 수 있습니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 호스트에 `/tmp/argus_socket`이 있으면 자동으로 컨테이너에 마운트하고 `--runtime nvidia`를 사용합니다.
 
 ```bash
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
+```
+
+CSI 파이프라인 기본값은 NVIDIA JetBot의 `sensor-mode=3`, `816x616`, `NV12`, `30fps` 설정을 따릅니다. 센서 방향이 뒤집혀 있으면 `CCAI_CSI_FLIP_METHOD=2`처럼 `nvvidconv flip-method` 값을 지정합니다.
+
+CSI만 직접 확인:
+
+```bash
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled ./scripts/host_docker_run.sh
+./scripts/host_csi_probe.sh
 ```
 
 CSI 모드는 기본적으로 10회만 open/probe를 재시도합니다. Argus 로그에 `Sensor could not be opened` 또는 `V4L2Device not available`이 반복되면 CSI 센서/케이블/Jetson 드라이버 쪽 문제로 보고 USB 카메라 운용을 먼저 확인하세요.
