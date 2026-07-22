@@ -31,6 +31,9 @@ def camera_parameters():
     url = os.environ.get("CCAI_CAMERA_URL")
     if url:
         params["camera_url"] = url
+    url_timeout = os.environ.get("CCAI_CAMERA_URL_TIMEOUT_SECONDS")
+    if url_timeout:
+        params["camera_url_timeout_seconds"] = float(url_timeout)
     retry_limit = os.environ.get("CCAI_CAMERA_RETRY_LIMIT")
     if retry_limit:
         params["max_open_attempts"] = int(retry_limit)

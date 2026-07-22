@@ -28,7 +28,8 @@ def build_pipeline(args):
 
 
 class CameraWorker:
-    def __init__(self, pipeline, jpeg_quality):
+    def __init__(self, args, pipeline, jpeg_quality):
+        self.args = args
         self.pipeline = pipeline
         self.jpeg_quality = jpeg_quality
         self.lock = threading.Lock()
@@ -41,6 +42,37 @@ class CameraWorker:
         thread.start()
 
     def run(self):
+        if self.args.backend in {"auto", "jetbot"}:
+            try:
+                self.run_jetbot()
+                return
+            except Exception as exc:
+                self.last_error = "jetbot backend failed: {0}".format(exc)
+                print(self.last_error, flush=True)
+                if self.args.backend == "jetbot":
+                    return
+        self.run_opencv()
+
+    def run_jetbot(self):
+        from jetbot import Camera
+
+        camera = Camera.instance(width=self.args.width, height=self.args.height)
+        print("backend=jetbot", flush=True)
+        while self.running:
+            frame = getattr(camera, "value", None)
+            if frame is None:
+                self.last_error = "jetbot no frame"
+                time.sleep(0.1)
+                continue
+            ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
+            if ok:
+                self.last_error = ""
+                with self.lock:
+                    self.latest_jpeg = encoded.tobytes()
+            time.sleep(1.0 / max(float(self.args.fps), 1.0))
+
+    def run_opencv(self):
+        print("backend=opencv", flush=True)
         while self.running:
             cap = cv2.VideoCapture(self.pipeline, cv2.CAP_GSTREAMER)
             if not cap.isOpened():
@@ -127,11 +159,12 @@ def main():
     parser.add_argument("--height", type=int, default=240)
     parser.add_argument("--flip-method", type=int, default=0)
     parser.add_argument("--jpeg-quality", type=int, default=45)
+    parser.add_argument("--backend", choices=["auto", "jetbot", "opencv"], default="auto")
     args = parser.parse_args()
 
     pipeline = build_pipeline(args)
     print("pipeline=" + pipeline, flush=True)
-    worker = CameraWorker(pipeline, args.jpeg_quality)
+    worker = CameraWorker(args, pipeline, args.jpeg_quality)
     worker.start()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(worker))
     print("serving=http://{0}:{1}/stream.mjpg".format(args.host, args.port), flush=True)

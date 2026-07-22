@@ -50,7 +50,7 @@ if [ -z "${CCAI_CAMERA_MODE:-}" ]; then
   fi
 fi
 if [ "${CCAI_CAMERA_MODE}" = "url" ] && [ -z "${CCAI_CAMERA_URL}" ]; then
-  CCAI_CAMERA_URL="http://127.0.0.1:${CCAI_CSI_MJPEG_PORT:-8090}/stream.mjpg"
+  CCAI_CAMERA_URL="http://127.0.0.1:${CCAI_CSI_MJPEG_PORT:-8090}/snapshot.jpg"
 fi
 DOCKER_PRIVILEGED="${DOCKER_PRIVILEGED:-0}"
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-}"

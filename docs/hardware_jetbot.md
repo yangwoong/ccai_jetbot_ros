@@ -159,6 +159,7 @@ Docker 내부 CSI가 `Failed to create CaptureSession` 또는 `opened=true/read=
 
 ```bash
 # 호스트에서 CSI를 MJPEG로 송출
+./scripts/host_csi_mjpeg_stop.sh
 ./scripts/host_csi_mjpeg_start.sh
 
 # Docker ROS 카메라 노드는 URL을 구독
@@ -169,7 +170,14 @@ CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=url ./scripts/host_docke
 
 ```bash
 curl http://127.0.0.1:8090/health
+curl http://127.0.0.1:8090/snapshot.jpg --output /tmp/csi.jpg
 curl http://127.0.0.1:8080/api/camera.jpg --output /tmp/jetbot.jpg
+```
+
+호스트의 JetBot 공개 코드가 동작한다면 MJPEG 서버는 기본적으로 `jetbot.Camera`를 먼저 시도하고, 실패하면 OpenCV GStreamer로 fallback합니다. JetBot 백엔드만 강제하려면:
+
+```bash
+CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
 ```
 
 카메라 토픽 확인:

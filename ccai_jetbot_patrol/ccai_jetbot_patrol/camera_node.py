@@ -8,6 +8,31 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 
+class UrlSnapshotCapture:
+    def __init__(self, url: str, cv2_module, timeout: float) -> None:
+        import numpy as np
+        import requests
+
+        self.url = url
+        self.cv2 = cv2_module
+        self.np = np
+        self.requests = requests
+        self.timeout = timeout
+
+    def isOpened(self) -> bool:
+        return bool(self.url)
+
+    def read(self):
+        response = self.requests.get(self.url, timeout=self.timeout)
+        response.raise_for_status()
+        array = self.np.frombuffer(response.content, dtype=self.np.uint8)
+        frame = self.cv2.imdecode(array, self.cv2.IMREAD_COLOR)
+        return frame is not None, frame
+
+    def release(self) -> None:
+        return
+
+
 class CameraNode(Node):
     def __init__(self) -> None:
         super().__init__("camera_node")
@@ -15,6 +40,7 @@ class CameraNode(Node):
         self.declare_parameter("camera_index", 0)
         self.declare_parameter("camera_device", "")
         self.declare_parameter("camera_url", "")
+        self.declare_parameter("camera_url_timeout_seconds", 1.5)
         self.declare_parameter("camera_mode", "usb")
         self.declare_parameter("camera_backend", "auto")
         self.declare_parameter("use_gstreamer", False)
@@ -104,7 +130,11 @@ class CameraNode(Node):
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "url":
             self.active_pipeline = str(self.get_parameter("camera_url").value)
-            self.capture = self.cv2.VideoCapture(self.active_pipeline)
+            self.capture = UrlSnapshotCapture(
+                self.active_pipeline,
+                self.cv2,
+                float(self.get_parameter("camera_url_timeout_seconds").value),
+            )
         elif backend == "gst_v4l2_any":
             pipeline = (
                 "v4l2src device={0} ! videoconvert "

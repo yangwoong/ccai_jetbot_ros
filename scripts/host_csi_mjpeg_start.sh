@@ -23,6 +23,7 @@ nohup ./scripts/host_csi_mjpeg_server.py \
   --height "${CCAI_CAMERA_HEIGHT:-240}" \
   --flip-method "${CCAI_CSI_FLIP_METHOD:-0}" \
   --jpeg-quality "${CCAI_CAMERA_JPEG_QUALITY:-45}" \
+  --backend "${CCAI_CSI_HOST_BACKEND:-auto}" \
   >"${LOG_FILE}" 2>&1 &
 
 echo "$!" >"${PID_FILE}"

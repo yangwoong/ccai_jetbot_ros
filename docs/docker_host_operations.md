@@ -83,8 +83,15 @@ CCAI_CAMERA_DEVICE=/dev/video0 ./scripts/host_camera_probe.sh
 Docker 내부 CSI가 `Failed to create CaptureSession` 또는 `opened=true/read=false`로 실패하지만 호스트의 JetBot 공개 코드는 영상이 나오면, CSI를 호스트 프로세스에서 열고 Docker ROS는 MJPEG URL을 읽게 합니다.
 
 ```bash
+./scripts/host_csi_mjpeg_stop.sh
 ./scripts/host_csi_mjpeg_start.sh
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=url ./scripts/host_docker_run.sh
+```
+
+호스트 JetBot 공개 코드 경로만 강제하려면:
+
+```bash
+CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
 ```
 
 이 명령에서 Jetson이 재부팅되면 ROS 코드 문제가 아니라 Jetson CSI/Argus/전원/커널 쪽 문제일 가능성이 큽니다. 재부팅 후 아래 로그를 수집합니다.
