@@ -12,6 +12,8 @@ ROS2 Humble 기반 자율순찰 로봇 프로젝트입니다. Jetson Nano Dev Ki
 ## 구성
 
 - `ccai_jetbot_patrol`: ROS2 Python 패키지
+- `jetbot_hardware_node`: `/cmd_vel`을 JetBot 모터 명령으로 변환하고 OLED/상태 LED를 갱신
+- `camera_node`: JetBot 카메라를 저해상도 JPEG ROS 토픽으로 발행
 - `patrol_node`: 순찰 상태 머신, `/cmd_vel` 제어, 임무 수신
 - `vlm_client_node`: 카메라 이미지를 vLLM OpenAI 호환 API로 분석
 - `llm_control_node`: 웹/텔레그램 관리자 입력을 직접 명령 또는 LLM 기반 명령으로 라우팅
@@ -39,6 +41,8 @@ ros2 launch ccai_jetbot_patrol patrol.launch.py
 ```text
 http://JETSON_IP:8080
 ```
+
+웹 화면에는 320x240 기본 해상도의 작은 카메라 JPEG가 자동 갱신됩니다. 네트워크가 느리면 `camera_node`의 `width`, `height`, `fps`, `jpeg_quality`를 낮추세요.
 
 ## H200 vLLM 예시
 

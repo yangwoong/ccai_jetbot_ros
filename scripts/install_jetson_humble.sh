@@ -7,6 +7,10 @@ sudo apt-get install -y \
   python3-colcon-common-extensions \
   python3-pip \
   python3-rosdep \
+  python3-opencv \
+  python3-pil \
+  python3-smbus \
+  i2c-tools \
   ros-humble-geometry-msgs \
   ros-humble-sensor-msgs \
   ros-humble-std-msgs \
@@ -22,4 +26,3 @@ else
 fi
 
 echo "[ccai] Done. Build with: colcon build --symlink-install"
-

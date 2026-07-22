@@ -1,4 +1,5 @@
 import json
+import time
 from enum import Enum
 
 import rclpy
@@ -24,10 +25,13 @@ class PatrolNode(Node):
         self.declare_parameter("angular_speed", 0.35)
         self.declare_parameter("heartbeat_seconds", 2.0)
         self.declare_parameter("safe_stop_on_idle", True)
+        self.declare_parameter("patrol_forward_seconds", 4.0)
+        self.declare_parameter("patrol_turn_seconds", 1.2)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
         self.last_vlm_summary = ""
+        self.state_changed_at = time.monotonic()
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -45,19 +49,19 @@ class PatrolNode(Node):
         self.get_logger().info(f"mission command: {command.type}")
 
         if command.type == "patrol_start":
-            self.state = PatrolState.PATROLLING
+            self.set_state(PatrolState.PATROLLING)
             self.current_target = ""
             self.publish_event("patrol started")
         elif command.type == "patrol_stop":
-            self.state = PatrolState.STOPPED
+            self.set_state(PatrolState.STOPPED)
             self.stop_motion()
             self.publish_event("patrol stopped")
         elif command.type == "go_home":
-            self.state = PatrolState.RETURNING_HOME
+            self.set_state(PatrolState.RETURNING_HOME)
             self.current_target = "home"
             self.publish_event("returning home")
         elif command.type == "inspect":
-            self.state = PatrolState.INSPECTING
+            self.set_state(PatrolState.INSPECTING)
             self.current_target = command.target
             self.publish_event(f"inspecting {command.target}")
         elif command.type == "status":
@@ -79,7 +83,15 @@ class PatrolNode(Node):
         angular_speed = float(self.get_parameter("angular_speed").value)
 
         if self.state == PatrolState.PATROLLING:
-            twist.linear.x = linear_speed
+            elapsed = time.monotonic() - self.state_changed_at
+            forward_seconds = float(self.get_parameter("patrol_forward_seconds").value)
+            turn_seconds = float(self.get_parameter("patrol_turn_seconds").value)
+            cycle = max(forward_seconds + turn_seconds, 0.1)
+            phase = elapsed % cycle
+            if phase < forward_seconds:
+                twist.linear.x = linear_speed
+            else:
+                twist.angular.z = angular_speed
         elif self.state == PatrolState.INSPECTING:
             twist.angular.z = angular_speed
         elif self.state == PatrolState.RETURNING_HOME:
@@ -94,12 +106,18 @@ class PatrolNode(Node):
     def stop_motion(self) -> None:
         self.cmd_vel_pub.publish(Twist())
 
+    def set_state(self, state: PatrolState) -> None:
+        if state != self.state:
+            self.state = state
+            self.state_changed_at = time.monotonic()
+
     def publish_status(self) -> None:
         payload = {
             "node": self.get_name(),
             "state": self.state.value,
             "target": self.current_target,
             "last_vlm_summary": self.last_vlm_summary,
+            "patrol_elapsed_seconds": round(time.monotonic() - self.state_changed_at, 1),
         }
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 

@@ -39,6 +39,8 @@ CONTAINER_NAME=jetbot-patrol IMAGE=my-ros-humble:latest ./scripts/host_docker_ru
 http://JETSON_IP:8080
 ```
 
+JetBot 하드웨어와 카메라 설정은 `docs/hardware_jetbot.md`를 먼저 확인하세요.
+
 ## 2. 로그 확인
 
 호스트에서:

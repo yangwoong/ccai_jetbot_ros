@@ -21,5 +21,7 @@ if ! command -v colcon >/dev/null 2>&1; then
   apt-get install -y python3-colcon-common-extensions python3-pip
 fi
 
+apt-get update
+apt-get install -y python3-opencv python3-pil python3-smbus i2c-tools
 python3 -m pip install fastapi uvicorn requests pyyaml
 colcon build --symlink-install

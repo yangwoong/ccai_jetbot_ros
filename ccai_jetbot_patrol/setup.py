@@ -23,6 +23,8 @@ setup(
     entry_points={
         "console_scripts": [
             "patrol_node = ccai_jetbot_patrol.patrol_node:main",
+            "jetbot_hardware_node = ccai_jetbot_patrol.jetbot_hardware_node:main",
+            "camera_node = ccai_jetbot_patrol.camera_node:main",
             "vlm_client_node = ccai_jetbot_patrol.vlm_client_node:main",
             "llm_control_node = ccai_jetbot_patrol.llm_control_node:main",
             "web_chat_node = ccai_jetbot_patrol.web_chat_node:main",

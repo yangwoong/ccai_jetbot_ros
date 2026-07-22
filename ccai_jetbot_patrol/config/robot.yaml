@@ -4,6 +4,35 @@ patrol_node:
     angular_speed: 0.35
     heartbeat_seconds: 2.0
     safe_stop_on_idle: true
+    patrol_forward_seconds: 4.0
+    patrol_turn_seconds: 1.2
+
+jetbot_hardware_node:
+  ros__parameters:
+    enabled: true
+    cmd_vel_topic: "/cmd_vel"
+    motor_backend: "jetbot"
+    max_linear_speed: 0.25
+    max_angular_speed: 1.2
+    left_trim: 1.0
+    right_trim: 1.0
+    command_timeout_seconds: 1.0
+    status_led_pin: -1
+    status_led_active_high: true
+    oled_enabled: true
+    oled_bus: 0
+    oled_refresh_seconds: 2.0
+
+camera_node:
+  ros__parameters:
+    enabled: true
+    camera_index: 0
+    use_gstreamer: false
+    width: 320
+    height: 240
+    fps: 5.0
+    jpeg_quality: 45
+    output_topic: "/image_raw/compressed"
 
 vlm_client_node:
   ros__parameters:
