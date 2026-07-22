@@ -136,13 +136,15 @@ camera_node:
     csi_fps: 30
 ```
 
-CSI 카메라 컨테이너 실행에는 `/tmp/argus_socket` 접근과 NVIDIA 런타임이 필요할 수 있습니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 호스트에 `/tmp/argus_socket`이 있으면 자동으로 컨테이너에 마운트하고 `--runtime nvidia`를 사용합니다.
+CSI 카메라 컨테이너 실행에는 Argus socket 접근과 NVIDIA 런타임이 필요합니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 기본적으로 `/tmp:/tmp`를 마운트하고 `--ipc host`, `--runtime nvidia`를 사용합니다. `/tmp/argus_socket` 단일 마운트는 `nvargus-daemon` 재시작 후 socket inode가 바뀌면 컨테이너에서 stale socket을 볼 수 있습니다.
 
 ```bash
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
 ```
 
 CSI 파이프라인 기본값은 NVIDIA JetBot의 `sensor-mode=3`, `816x616`, `NV12`, `30fps` 설정을 따릅니다. 센서 방향이 뒤집혀 있으면 `CCAI_CSI_FLIP_METHOD=2`처럼 `nvvidconv flip-method` 값을 지정합니다.
+
+JetBot 공개 코드와 동일하게 open probe 단계에서는 첫 프레임이 읽히면 성공으로 봅니다. 순찰 중 무효 프레임 필터는 별도로 유지됩니다.
 
 CSI만 직접 확인:
 

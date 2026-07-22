@@ -11,8 +11,8 @@ CSI_OUTPUT_WIDTH="${CCAI_CAMERA_WIDTH:-320}"
 CSI_OUTPUT_HEIGHT="${CCAI_CAMERA_HEIGHT:-240}"
 CSI_FLIP_METHOD="${CCAI_CSI_FLIP_METHOD:-0}"
 
-PIPELINE="nvarguscamerasrc sensor-mode=${CSI_SENSOR_MODE} ! video/x-raw(memory:NVMM), width=${CSI_CAPTURE_WIDTH}, height=${CSI_CAPTURE_HEIGHT}, format=(string)NV12, framerate=(fraction)${CSI_FPS}/1 ! nvvidconv flip-method=${CSI_FLIP_METHOD} ! video/x-raw, width=(int)${CSI_OUTPUT_WIDTH}, height=(int)${CSI_OUTPUT_HEIGHT}, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
-PIPELINE_WITH_ID="nvarguscamerasrc sensor-id=${CSI_SENSOR_ID} ! video/x-raw(memory:NVMM), width=${CSI_CAPTURE_WIDTH}, height=${CSI_CAPTURE_HEIGHT}, format=(string)NV12, framerate=(fraction)${CSI_FPS}/1 ! nvvidconv flip-method=${CSI_FLIP_METHOD} ! video/x-raw, width=(int)${CSI_OUTPUT_WIDTH}, height=(int)${CSI_OUTPUT_HEIGHT}, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
+PIPELINE="nvarguscamerasrc sensor-mode=${CSI_SENSOR_MODE} ! video/x-raw(memory:NVMM), width=${CSI_CAPTURE_WIDTH}, height=${CSI_CAPTURE_HEIGHT}, format=(string)NV12, framerate=(fraction)${CSI_FPS}/1 ! nvvidconv flip-method=${CSI_FLIP_METHOD} ! video/x-raw, width=(int)${CSI_OUTPUT_WIDTH}, height=(int)${CSI_OUTPUT_HEIGHT}, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+PIPELINE_WITH_ID="nvarguscamerasrc sensor-id=${CSI_SENSOR_ID} ! video/x-raw(memory:NVMM), width=${CSI_CAPTURE_WIDTH}, height=${CSI_CAPTURE_HEIGHT}, format=(string)NV12, framerate=(fraction)${CSI_FPS}/1 ! nvvidconv flip-method=${CSI_FLIP_METHOD} ! video/x-raw, width=(int)${CSI_OUTPUT_WIDTH}, height=(int)${CSI_OUTPUT_HEIGHT}, format=(string)BGRx ! videoconvert ! video/x-raw, format=(string)BGR ! appsink"
 
 echo "[host] argus and video devices"
 systemctl is-active nvargus-daemon 2>/dev/null | sed 's/^/nvargus-daemon: /' || true

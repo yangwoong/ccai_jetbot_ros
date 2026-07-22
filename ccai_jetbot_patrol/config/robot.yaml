@@ -56,6 +56,7 @@ camera_node:
     max_open_attempts: 0
     open_probe_frames: 8
     reject_invalid_frames: true
+    reject_invalid_on_open: false
     invalid_green_ratio: 0.85
     invalid_min_stddev: 8.0
     debug_frame_path: "/tmp/ccai_camera_last_invalid.jpg"

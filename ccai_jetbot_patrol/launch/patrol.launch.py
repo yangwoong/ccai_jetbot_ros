@@ -52,6 +52,9 @@ def camera_parameters():
     csi_flip_method = os.environ.get("CCAI_CSI_FLIP_METHOD")
     if csi_flip_method:
         params["csi_flip_method"] = int(csi_flip_method)
+    reject_invalid_on_open = os.environ.get("CCAI_CAMERA_REJECT_INVALID_ON_OPEN")
+    if reject_invalid_on_open:
+        params["reject_invalid_on_open"] = reject_invalid_on_open.lower() in {"1", "true", "yes", "on"}
     return params
 
 

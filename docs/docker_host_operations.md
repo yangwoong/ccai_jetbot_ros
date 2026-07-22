@@ -61,7 +61,7 @@ CCAI_SAFE_START=0 ./scripts/host_docker_run.sh
 CCAI_SAFE_START=0 DOCKER_PRIVILEGED=1 ./scripts/host_docker_run.sh
 ```
 
-Jetson CSI 카메라는 Argus를 사용하므로, USB `/dev/video0`와 분리해서 실행합니다. CSI 모드는 기본적으로 `/tmp/argus_socket`만 마운트하고 `--runtime nvidia`를 사용합니다.
+Jetson CSI 카메라는 Argus를 사용하므로, USB `/dev/video0`와 분리해서 실행합니다. CSI 모드는 기본적으로 `/tmp:/tmp`를 마운트하고 `--ipc host`, `--runtime nvidia`를 사용합니다. `nvargus-daemon` 재시작 후 `/tmp/argus_socket` 단일 마운트가 stale 상태가 되는 문제를 피하기 위한 설정입니다.
 
 ```bash
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh

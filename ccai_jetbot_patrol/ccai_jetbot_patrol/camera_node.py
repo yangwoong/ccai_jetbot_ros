@@ -35,6 +35,7 @@ class CameraNode(Node):
         self.declare_parameter("max_open_attempts", 0)
         self.declare_parameter("open_probe_frames", 8)
         self.declare_parameter("reject_invalid_frames", True)
+        self.declare_parameter("reject_invalid_on_open", False)
         self.declare_parameter("invalid_green_ratio", 0.85)
         self.declare_parameter("invalid_min_stddev", 8.0)
         self.declare_parameter("debug_frame_path", "/tmp/ccai_camera_last_invalid.jpg")
@@ -78,10 +79,10 @@ class CameraNode(Node):
         backend = self.next_backend()
         self.active_backend = backend
         if backend == "csi_jetbot":
-            pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True)
+            pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True, jetbot_exact=True)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_jetcam":
-            pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False)
+            pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False, jetbot_exact=True)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_gstreamer":
             pipeline = (
@@ -140,7 +141,8 @@ class CameraNode(Node):
             self.publish_event("camera open failed, backend={0}".format(backend))
             self.capture = None
         elif not self.probe_capture():
-            self.last_error = "probe failed with backend={0}".format(backend)
+            if not self.last_error:
+                self.last_error = "probe failed with backend={0}".format(backend)
             self.publish_event("camera probe failed, backend={0}".format(backend))
             self.capture.release()
             self.capture = None
@@ -211,7 +213,10 @@ class CameraNode(Node):
             ok, frame = self.capture.read()
             if ok and frame is not None:
                 last_frame = frame
-                if not self.is_invalid_frame(self.resize_output(frame)):
+                if not bool(self.get_parameter("reject_invalid_on_open").value):
+                    return True
+                resized = self.resize_output(frame)
+                if not self.is_invalid_frame(resized):
                     return True
             time.sleep(0.05)
         if last_frame is not None:
@@ -342,16 +347,17 @@ class CameraNode(Node):
             return device
         return "/dev/video{0}".format(int(self.get_parameter("camera_index").value))
 
-    def csi_pipeline(self, include_sensor_id: bool, include_sensor_mode: bool) -> str:
+    def csi_pipeline(self, include_sensor_id: bool, include_sensor_mode: bool, jetbot_exact: bool = False) -> str:
         source = "nvarguscamerasrc"
         if include_sensor_id:
             source += " sensor-id={0}".format(int(self.get_parameter("csi_sensor_id").value))
         if include_sensor_mode:
             source += " sensor-mode={0}".format(int(self.get_parameter("csi_sensor_mode").value))
+        appsink = "appsink" if jetbot_exact else "appsink drop=true max-buffers=1 sync=false"
         return (
             "{0} ! video/x-raw(memory:NVMM), width={1}, height={2}, format=(string)NV12, framerate=(fraction){3}/1 "
             "! nvvidconv flip-method={4} ! video/x-raw, width=(int){5}, height=(int){6}, format=(string)BGRx "
-            "! videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
+            "! videoconvert ! video/x-raw, format=(string)BGR ! {7}"
         ).format(
             source,
             int(self.get_parameter("csi_capture_width").value),
@@ -360,6 +366,7 @@ class CameraNode(Node):
             int(self.get_parameter("csi_flip_method").value),
             int(self.get_parameter("width").value),
             int(self.get_parameter("height").value),
+            appsink,
         )
 
     def destroy_node(self) -> bool:
