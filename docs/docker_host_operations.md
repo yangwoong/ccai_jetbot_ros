@@ -18,13 +18,41 @@ cd /home/roboat/work/ros2_ws/ccai_jetbot_ros
 ./scripts/host_docker_run.sh
 ```
 
+기본 실행은 재부팅/장치 충돌을 피하기 위한 안전 모드입니다. 웹, LLM 제어, 텔레그램, OTA만 실행하고 모터, 카메라, 비전, VLM 이미지 분석은 꺼둡니다.
+
+```bash
+CCAI_SAFE_START=1 ./scripts/host_docker_run.sh
+```
+
+안전 모드에서 재부팅이 멈추면 장치를 하나씩 켭니다.
+
+```bash
+# 1단계: 카메라만 추가
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ./scripts/host_docker_run.sh
+
+# 2단계: 카메라 + 비전
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_ENABLE_VISION=1 ./scripts/host_docker_run.sh
+
+# 3단계: 모터/OLED 하드웨어 추가
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_ENABLE_VISION=1 CCAI_ENABLE_HARDWARE=1 ./scripts/host_docker_run.sh
+
+# 전체 운영 모드
+CCAI_SAFE_START=0 ./scripts/host_docker_run.sh
+```
+
+그래도 카메라나 I2C 장치 접근이 부족하면 마지막 단계에서만 privileged를 켭니다.
+
+```bash
+CCAI_SAFE_START=0 DOCKER_PRIVILEGED=1 ./scripts/host_docker_run.sh
+```
+
 기본값:
 
 ```bash
 CONTAINER_NAME=ccai-jetbot
 HOST_WS=/home/roboat/work/ros2_ws
 REPO_DIR=ccai_jetbot_ros
-IMAGE=osrf/ros:humble-ros-base
+IMAGE=dustynv/ros:humble-desktop-l4t-r32.7.1
 ```
 
 다른 이미지나 컨테이너명을 쓰려면:
@@ -58,6 +86,13 @@ docker logs -f ccai-jetbot
 컨테이너 생성 이후의 과거 로그가 모두 섞이면 원인 판단이 어렵습니다. 최신 하드웨어 상태는 다음 진단 스크립트로 확인합니다.
 
 ```bash
+./scripts/host_docker_diag.sh
+```
+
+재부팅 반복을 조사할 때는 먼저 안전 모드 컨테이너를 만든 뒤 진단합니다.
+
+```bash
+CCAI_SAFE_START=1 ./scripts/host_docker_run.sh
 ./scripts/host_docker_diag.sh
 ```
 

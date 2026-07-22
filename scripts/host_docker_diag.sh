@@ -11,6 +11,10 @@ echo "[container] environment and devices"
 docker exec "${CONTAINER_NAME}" bash -c '
 set +e
 echo "ROS_LOCALHOST_ONLY(exec env)=${ROS_LOCALHOST_ONLY:-unset}"
+echo "CCAI_ENABLE_HARDWARE=${CCAI_ENABLE_HARDWARE:-unset}"
+echo "CCAI_ENABLE_CAMERA=${CCAI_ENABLE_CAMERA:-unset}"
+echo "CCAI_ENABLE_VISION=${CCAI_ENABLE_VISION:-unset}"
+echo "CCAI_ENABLE_VLM=${CCAI_ENABLE_VLM:-unset}"
 echo "ROS_DISTRO=${ROS_DISTRO:-unset}"
 echo "Python: $(python3 --version 2>&1)"
 echo "I2C devices:"
