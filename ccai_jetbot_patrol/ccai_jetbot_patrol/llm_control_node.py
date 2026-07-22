@@ -19,16 +19,23 @@ Allowed command types:
 - patrol_start: start autonomous patrol
 - patrol_stop: stop robot motion and patrol
 - go_home: return to home or charging station
-- inspect: inspect a named target. Include target.
+- inspect: go check something, possibly at a named location the robot was
+  previously taught (e.g. "정문", "주방", "복도"). Include target as the
+  location name if one is mentioned, or empty if the request is about the
+  robot's current position. Include text as the specific thing to check,
+  in the user's own words (e.g. "택배가 있는지 확인해줘"). If the robot
+  doesn't know that location yet it will say so and check from where it is.
 - follow_person: follow the requested person or object using the robot camera. Include target (e.g. "person", "backpack").
-- move_forward: drive forward briefly
-- move_backward: drive backward briefly
+- move_forward: drive forward continuously until told to stop. Include target as "slow" if the user asked for reduced speed, otherwise leave target empty.
+- move_backward: drive backward continuously until told to stop. Include target as "slow" if reduced speed was requested.
 - turn_left: turn left in place briefly
 - turn_right: turn right in place briefly
 - set_speed: change driving speed. Include target as "up" or "down".
 - analyze: analyze the current camera view right now and report back
+- remember_start: begin recording the path driven from here so it can be saved as a named location
+- remember_save: save the path recorded since remember_start under a name. Include target as the location name (e.g. "정문").
 - say: if no robot action is requested. Include text.
-JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|say","target":"","text":""}
+JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|say","target":"","text":""}
 """
 
 

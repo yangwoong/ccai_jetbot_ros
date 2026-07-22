@@ -180,27 +180,35 @@ ros2 topic echo /ccai/events
 
 | 동작 | 예시 문장 | 내부 명령 타입 |
 |---|---|---|
-| 전진 | "앞으로 가", "전진해", "직진" | `move_forward` |
-| 후진 | "뒤로 가", "후진해" | `move_backward` |
-| 좌회전 | "좌회전해", "왼쪽으로 돌아" | `turn_left` |
-| 우회전 | "우회전해", "오른쪽으로 돌아" | `turn_right` |
-| 속도 높이기 | "속도 높여", "빠르게" | `set_speed` (up) |
-| 속도 낮추기 | "속도 줄여", "천천히" | `set_speed` (down) |
+| 전진 (정지할 때까지 계속) | "앞으로 가", "전진해", "직진" | `move_forward` |
+| 후진 (정지할 때까지 계속) | "뒤로 가", "후진해" | `move_backward` |
+| 저속 전진/후진 | "천천히 앞으로 가", "천천히 뒤로 가" | `move_forward`/`move_backward` (target="slow") |
+| 좌/우회전 (짧게) | "좌회전해", "우회전해" | `turn_left`/`turn_right` |
+| 정지 | "정지", "멈춰" | `patrol_stop` |
+| 속도 높이기/낮추기 | "속도 높여"/"속도 줄여" | `set_speed` (up/down) |
 | 즉시 영상 분석 | "영상 분석해", "지금 뭐가 보여" | `analyze` |
 
-- 전진/후진은 `manual_move_seconds`(기본 1.5초), 좌/우회전은 `manual_turn_seconds`(기본 0.8초) 동안만 움직이고 자동으로 멈춥니다(관리자가 텍스트로 조작하는 것이라 계속 움직이면 위험하기 때문에 한 번에 짧게 넛지하는 방식입니다). 필요하면 명령을 여러 번 보내면 됩니다.
-- 속도 조절은 `patrol_node`의 `linear_speed`/`angular_speed`에 곱해지는 `speed_scale` 배율을 `speed_step`(기본 0.2)만큼 올리고 내립니다 (`min_speed_scale`~`max_speed_scale`, 기본 0.3~2.0 사이로 clamp).
+**전진/후진은 명시적으로 정지시키기 전까지 계속 이동합니다** (예전에는 1.5초만 움직이고 멈췄는데, "천천히 앞으로 가"가 조금 가다 멈추는 게 의도와 다르다는 피드백으로 수정했습니다 — 의도는 "느리게 계속 가다가 장애물이 있으면 서거나 피하고, 정지 명령이 올 때까지 계속 가는 것"이었습니다). `vision_nav_node`가 켜져 있으면 전진 중 장애물 회피가 그대로 적용됩니다(후진은 카메라가 뒤를 못 보므로 회피 없이 계속 이동 — 정지 명령으로만 멈춥니다). 좌/우회전은 여전히 `manual_turn_seconds`(기본 0.8초) 동안만 도는 짧은 넛지입니다(방향만 살짝 트는 용도).
+
+- 속도 조절은 `patrol_node`의 `linear_speed`/`angular_speed`에 곱해지는 `speed_scale` 배율을 `speed_step`(기본 0.2)만큼 올리고 내립니다 (`min_speed_scale`~`max_speed_scale`, 기본 0.3~2.0 사이로 clamp). "천천히 앞으로 가"는 이거와 별개로 그 이동 한 번에만 `manual_drive_slow_factor`(기본 0.5배)를 추가로 곱합니다.
 - "영상 분석해"는 `/ccai/vlm_trigger`로 즉시 분석을 요청하고, 결과가 오면 위험 여부와 상관없이 `analysis result: ...`로 `/ccai/events`에 발행되어 웹채팅/텔레그램에 그대로 보입니다.
 
 관련 파라미터 (`robot.yaml` → `patrol_node`):
 
 ```yaml
-manual_move_seconds: 1.5
+manual_move_seconds: 1.5   # 위치를 가르치는 중(녹화 중)에만 전/후진에 쓰이는 넛지 길이
 manual_turn_seconds: 0.8
+manual_drive_slow_factor: 0.5
 speed_step: 0.2
 min_speed_scale: 0.3
 max_speed_scale: 2.0
+speed_ramp_seconds: 1.5
+speed_ramp_min_factor: 0.35
 ```
+
+### 모터 방향이 반대였던 문제 (수정됨)
+
+"전진"을 명령하면 실제로는 후진하는 문제가 있었습니다. `jetbot_hardware_node`의 `left_trim`/`right_trim`이 `1.0`으로 되어 있었는데, 이 로봇의 실제 모터 배선/극성 기준으로는 `-1.0`이어야 정방향이 맞았습니다. `robot.yaml`에서 둘 다 `-1.0`으로 바꿨습니다. 좌/우가 바뀌어 보이면(전후는 맞는데 회전 방향만 반대) 둘 중 하나만 부호를 바꾸면 됩니다.
 
 ## 6. 텔레그램 알림 동작 확인
 
@@ -251,3 +259,39 @@ docker logs --since 5m ccai-jetbot | grep -i telegram
 # 부팅 자동 실행(systemd)일 때:
 journalctl -u ccai-jetbot.service --since "10 minutes ago" | grep -i nvargus-fix
 ```
+
+## 8. 위치 가르치기와 지역 기반 임무 ("정문앞에 택배가 있는지 보고와")
+
+오도메트리/IMU가 없어서 좌표 기반 지도는 못 만들지만, "이 이름으로 가려면 이렇게 움직이면 된다"는 teach-and-repeat 방식으로 이름 붙은 위치를 다룰 수 있습니다. 자세한 배경은 [Navigation Roadmap](navigation_roadmap.md)을 참고하세요.
+
+### 위치 가르치기
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"기억 시작"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"앞으로 가"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"정지"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"좌회전해"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"정문으로 저장해"}'
+```
+
+`기억 시작` 이후 나온 이동 명령들(전진/후진/좌회전/우회전)이 시간과 함께 기록되고, `<이름>으로 저장해`로 그 시퀀스를 이름과 함께 저장합니다(`data/locations.json`). 이 파일은 컨테이너 재시작에도 유지됩니다(호스트 저장소에 있는 `data/`가 컨테이너에 바인드 마운트되므로).
+
+### 지역 기반 임무 수행
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"정문앞에 택배가 있는지 보고와"}'
+```
+
+이 문장은 직접 명령 패턴에 안 걸리므로 LLM(Qwen3-VL-70B)이 처리합니다. LLM이 `{"type":"inspect","target":"정문","text":"택배가 있는지 확인해줘"}`로 해석하면:
+
+1. "정문"이 저장돼 있으면 그 위치까지 저장된 이동 시퀀스를 재생합니다(이벤트: `heading to 정문 (N steps)`).
+2. 도착하면 `vlm_client_node`에게 그 질문("택배가 있는지 확인해줘")을 그대로 물어보고, 결과를 `analysis result: 정문: ...`으로 `/ccai/events`에 발행합니다 — 텔레그램/웹채팅에 그대로 뜹니다.
+3. "정문"을 모르면(아직 안 가르쳤으면) 현재 위치에서 바로 확인하고 "위치를 모른다"는 안내를 함께 보냅니다.
+
+### 확인
+
+```bash
+docker exec ccai-jetbot cat /home/workspace/ccai_jetbot_ros/data/locations.json
+```
+
+관련 파라미터 (`robot.yaml` → `patrol_node`): `locations_file` (기본 `data/locations.json`).

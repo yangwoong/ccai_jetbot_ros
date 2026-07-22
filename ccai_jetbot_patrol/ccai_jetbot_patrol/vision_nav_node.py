@@ -150,16 +150,17 @@ class VisionNavNode(Node):
         if not bool(self.get_parameter("enabled").value) or self.cv2 is None:
             return
         frame = self.decode_frame(msg.data)
+        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
         if frame is None or self.is_invalid_frame(frame):
             self.publish_status("invalid_camera", stop=True)
             self.publish_stop()
-            if self.mode in {"patrolling", "following_person"}:
+            if drives_forward or self.mode == "following_person":
                 self.publish_event_throttled("camera view is invalid, stopping motion", key="camera")
             return
 
         self.last_valid_frame_at = time.monotonic()
         self.frame_count += 1
-        if self.mode == "patrolling":
+        if drives_forward:
             twist, detail = self.compute_patrol_command(frame)
             self.cmd_pub.publish(twist)
             self.publish_status("patrol", detail=detail)
@@ -445,7 +446,8 @@ class VisionNavNode(Node):
         return best
 
     def watchdog(self) -> None:
-        if self.mode not in {"patrolling", "following_person"}:
+        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        if not (drives_forward or self.mode == "following_person"):
             return
         timeout = float(self.get_parameter("min_valid_frame_seconds").value)
         if time.monotonic() - self.last_valid_frame_at > timeout:

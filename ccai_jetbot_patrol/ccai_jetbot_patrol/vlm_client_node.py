@@ -43,11 +43,20 @@ class VlmClientNode(Node):
         self.last_request_at = 0.0
         self.inflight = False
         self.triggered = False
+        self.pending_question = ""
         self.latest_frame = None
         self.get_logger().info(f"vlm_client_node ready, image_topic={image_topic}, trigger_topic={trigger_topic}")
 
     def on_trigger(self, msg: String) -> None:
         self.triggered = True
+        question = ""
+        try:
+            payload = json.loads(msg.data)
+            question = str(payload.get("question", "")).strip()
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        if question:
+            self.pending_question = question
 
     def on_image(self, msg: CompressedImage) -> None:
         now = time.monotonic()
@@ -57,22 +66,28 @@ class VlmClientNode(Node):
         self.last_request_at = now
         self.inflight = True
         self.triggered = False
+        question = self.pending_question
+        self.pending_question = ""
         image_bytes = bytes(msg.data)
-        threading.Thread(target=self.analyze_image, args=(image_bytes, msg.format), daemon=True).start()
+        threading.Thread(target=self.analyze_image, args=(image_bytes, msg.format, question), daemon=True).start()
 
-    def analyze_image(self, image_bytes: bytes, image_format: str) -> None:
+    def analyze_image(self, image_bytes: bytes, image_format: str, question: str = "") -> None:
         try:
-            content = self.call_vlm(image_bytes, image_format)
-            observation = self.parse_observation(content)
+            content = self.call_vlm(image_bytes, image_format, question)
+            observation = self.parse_observation(content, question)
             self.observation_pub.publish(String(data=json.dumps(observation, ensure_ascii=False)))
         except Exception as exc:
             self.get_logger().warning(f"vlm request failed: {exc}")
         finally:
             self.inflight = False
 
-    def parse_observation(self, content: str) -> Dict[str, Any]:
+    def parse_observation(self, content: str, question: str = "") -> Dict[str, Any]:
         max_chars = int(self.get_parameter("summary_max_chars").value)
         text = content.strip()
+        if question:
+            # A specific question ("택배가 있는지 확인해줘") isn't a risk judgement,
+            # just answer it directly.
+            return {"risk": False, "summary": text[:max_chars], "raw": text}
         risk = False
         summary = text
         upper = text.upper()
@@ -85,11 +100,21 @@ class VlmClientNode(Node):
         summary = summary[:max_chars]
         return {"risk": risk, "summary": summary, "raw": text}
 
-    def call_vlm(self, image_bytes: bytes, image_format: str) -> str:
+    def build_prompt(self, question: str) -> str:
+        max_chars = int(self.get_parameter("summary_max_chars").value)
+        if question:
+            return (
+                "You are a patrol robot's camera assistant. Answer the following "
+                f"question about what the camera currently sees, in Korean, in "
+                f"{max_chars} characters or fewer, one line, no markdown: {question}"
+            )
+        return str(self.get_parameter("prompt").value)
+
+    def call_vlm(self, image_bytes: bytes, image_format: str, question: str = "") -> str:
         api_base_url = self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
         api_key = self.param_or_env("api_key", "CCAI_VLLM_API_KEY", "")
         model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct")
-        prompt = str(self.get_parameter("prompt").value)
+        prompt = self.build_prompt(question)
         timeout = float(self.get_parameter("request_timeout_seconds").value)
 
         mime_type = "image/jpeg"

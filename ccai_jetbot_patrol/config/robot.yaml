@@ -15,6 +15,8 @@ patrol_node:
     max_speed_scale: 2.0
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
+    manual_drive_slow_factor: 0.5
+    locations_file: "data/locations.json"
 
 jetbot_hardware_node:
   ros__parameters:
@@ -28,8 +30,8 @@ jetbot_hardware_node:
     max_linear_speed: 0.05
     max_angular_speed: 0.22
     motor_output_scale: 0.35
-    left_trim: 1.0
-    right_trim: 1.0
+    left_trim: -1.0
+    right_trim: -1.0
     command_timeout_seconds: 1.0
     status_led_pin: -1
     status_led_active_high: true

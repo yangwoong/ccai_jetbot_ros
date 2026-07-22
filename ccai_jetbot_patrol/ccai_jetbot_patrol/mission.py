@@ -1,5 +1,8 @@
 import json
+import re
 from typing import Any, Dict
+
+SAVE_LOCATION_PATTERN = re.compile(r"(?:여기를?\s*)?([가-힣A-Za-z0-9]+?)\s*(?:으로|로)\s*(?:저장|기억)")
 
 
 class MissionCommand:
@@ -39,6 +42,15 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="go_home", raw=message)
     if lowered in {"follow person", "person follow", "follow me", "사람 따라가", "따라와", "나를 따라와"}:
         return MissionCommand(type="follow_person", target="person", raw=message)
+    if lowered in {"remember start", "위치 기억 시작", "기억 시작", "여기부터 기억해", "여기부터 기억"}:
+        return MissionCommand(type="remember_start", raw=message)
+    if ("천천히" in lowered) and ("앞으로" in lowered or "전진" in lowered):
+        return MissionCommand(type="move_forward", target="slow", raw=message)
+    if ("천천히" in lowered) and ("뒤로" in lowered or "후진" in lowered):
+        return MissionCommand(type="move_backward", target="slow", raw=message)
+    save_match = SAVE_LOCATION_PATTERN.search(raw)
+    if save_match and ("저장" in lowered or "기억" in lowered) and "시작" not in lowered:
+        return MissionCommand(type="remember_save", target=save_match.group(1), raw=message)
     if lowered in {"forward", "go forward", "move forward", "전진", "전진해", "앞으로", "앞으로 가", "직진", "직진해"}:
         return MissionCommand(type="move_forward", raw=message)
     if lowered in {"backward", "go back", "move backward", "후진", "후진해", "뒤로", "뒤로 가"}:
@@ -56,9 +68,9 @@ def parse_mission_command(message: str) -> MissionCommand:
     if lowered in {"analyze", "analyze image", "분석", "영상 분석", "영상분석", "카메라 분석", "지금 상황", "지금 뭐가 보여", "뭐가 보여"}:
         return MissionCommand(type="analyze", raw=message)
     if lowered.startswith("inspect "):
-        return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
+        return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], text=raw, raw=message)
     if lowered.startswith("점검 "):
-        return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
+        return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], text=raw, raw=message)
     if "순찰" in lowered and ("시작" in lowered or "출발" in lowered):
         return MissionCommand(type="patrol_start", raw=message)
     if "순찰" in lowered and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
@@ -70,8 +82,12 @@ def parse_mission_command(message: str) -> MissionCommand:
     if "점검" in lowered:
         target = raw.split("점검", 1)[0].strip()
         target = target.replace("를", "").replace("을", "").strip()
-        return MissionCommand(type="inspect", target=target or "requested target", raw=message)
-    if "상태" in lowered or "보고" in lowered:
+        return MissionCommand(type="inspect", target=target or "requested target", text=raw, raw=message)
+    # Short-message only: "보고" especially is a generic verb ending ("...확인해서
+    # 보고와") that shows up in plenty of task-specific sentences (e.g. "정문앞에
+    # 택배가 있는지 보고와"). Those need to reach the LLM as an inspect-style
+    # request, not get force-classified as a plain status query here.
+    if len(raw) <= 10 and ("상태" in lowered or "보고" in lowered):
         return MissionCommand(type="status", raw=message)
     if "앞으로" in lowered or "전진" in lowered or "직진" in lowered:
         return MissionCommand(type="move_forward", raw=message)
@@ -124,6 +140,9 @@ def normalize_command_type(command_type: str) -> str:
         "set_speed": "set_speed",
         "analyze": "analyze",
         "analyse": "analyze",
+        "remember_start": "remember_start",
+        "remember_save": "remember_save",
+        "save_location": "remember_save",
     }
     return aliases.get(lowered, lowered)
 
@@ -132,6 +151,7 @@ def is_direct_robot_command(command: MissionCommand) -> bool:
     return command.type in {
         "status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person",
         "move_forward", "move_backward", "turn_left", "turn_right", "set_speed", "analyze",
+        "remember_start", "remember_save",
     }
 
 
