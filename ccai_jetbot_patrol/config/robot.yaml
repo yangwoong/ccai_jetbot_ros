@@ -37,11 +37,14 @@ camera_node:
     camera_backend: "auto"
     use_gstreamer: false
     force_v4l2: true
+    capture_width: 640
+    capture_height: 480
     width: 320
     height: 240
     fps: 5.0
     jpeg_quality: 45
     reopen_after_failures: 5
+    open_probe_frames: 8
     reject_invalid_frames: true
     invalid_green_ratio: 0.85
     invalid_min_stddev: 8.0
