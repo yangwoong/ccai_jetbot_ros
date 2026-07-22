@@ -85,9 +85,16 @@ class PatrolNode(Node):
             self.publish_event(f"unknown command: {command.raw}")
 
     def on_vlm_observation(self, msg: String) -> None:
-        self.last_vlm_summary = msg.data
-        if self.state == PatrolState.PATROLLING and any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"]):
-            self.publish_event(f"attention required: {msg.data[:180]}")
+        try:
+            payload = json.loads(msg.data)
+            risk = bool(payload.get("risk", False))
+            summary = str(payload.get("summary", "")) or msg.data
+        except (json.JSONDecodeError, AttributeError):
+            summary = msg.data
+            risk = any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"])
+        self.last_vlm_summary = summary
+        if risk and self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON, PatrolState.INSPECTING}:
+            self.publish_event(f"attention required: {summary[:180]}")
 
     def on_vision_status(self, msg: String) -> None:
         self.last_vision_status = msg.data
@@ -105,7 +112,15 @@ class PatrolNode(Node):
             self.cmd_vel_pub.publish(self.last_vision_cmd)
             return
 
-        if self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON} and bool(self.get_parameter("use_vision_cmd_vel").value):
+        # Only force a safety stop once vision_nav_node has actually been contributing
+        # commands and then goes stale (camera/vision lost mid-mission). If vision has
+        # never published anything (disabled, not yet started, or unavailable), fall
+        # through to the plain drive pattern below instead of sitting stopped forever.
+        if (
+            self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON}
+            and bool(self.get_parameter("use_vision_cmd_vel").value)
+            and self.last_vision_cmd_at > 0.0
+        ):
             self.stop_motion()
             return
 

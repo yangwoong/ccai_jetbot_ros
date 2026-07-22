@@ -63,6 +63,7 @@ vlm_client:
 
 도커 외부 웹 채팅, 텔레그램, H200 API 키 설정은 [Connectivity Guide](docs/connectivity.md)를 참고하세요.
 도커에 진입하지 않는 호스트 실행/업데이트 방법은 [Docker Host Operations](docs/docker_host_operations.md)를 참고하세요.
+YOLO 기반 자율 주행/따라가기와 VLM 위험 알림(텔레그램/웹채팅) 설정은 [Vision and Alerts](docs/vision_and_alerts.md)를 참고하세요.
 
 ## 관리자 명령 예시
 

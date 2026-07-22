@@ -12,6 +12,15 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 
+DEFAULT_PROMPT = (
+    "You are monitoring a patrol robot's camera. Reply with exactly one line: "
+    "start with 'RISK:' if you see something dangerous or unusual "
+    "(person down, fire, smoke, collision risk, intruder, blocked path), "
+    "otherwise start with 'NORMAL:'. Follow the prefix with a summary in Korean "
+    "of 50 characters or fewer. No markdown, no extra lines."
+)
+
+
 class VlmClientNode(Node):
     def __init__(self) -> None:
         super().__init__("vlm_client_node")
@@ -19,35 +28,62 @@ class VlmClientNode(Node):
         self.declare_parameter("api_key", os.getenv("CCAI_VLLM_API_KEY", ""))
         self.declare_parameter("model", os.getenv("CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"))
         self.declare_parameter("image_topic", "/image_raw/compressed")
-        self.declare_parameter("prompt", "Describe patrol-relevant safety issues in this robot camera image. Be concise.")
-        self.declare_parameter("min_interval_seconds", 3.0)
+        self.declare_parameter("trigger_topic", "/ccai/vlm_trigger")
+        self.declare_parameter("prompt", DEFAULT_PROMPT)
+        self.declare_parameter("summary_max_chars", 50)
+        self.declare_parameter("min_interval_seconds", 5.0)
         self.declare_parameter("request_timeout_seconds", 20.0)
 
         image_topic = str(self.get_parameter("image_topic").value)
+        trigger_topic = str(self.get_parameter("trigger_topic").value)
         self.observation_pub = self.create_publisher(String, "/ccai/vlm_observation", 10)
         self.create_subscription(CompressedImage, image_topic, self.on_image, 1)
+        self.create_subscription(String, trigger_topic, self.on_trigger, 10)
 
         self.last_request_at = 0.0
         self.inflight = False
-        self.get_logger().info(f"vlm_client_node ready, image_topic={image_topic}")
+        self.triggered = False
+        self.latest_frame = None
+        self.get_logger().info(f"vlm_client_node ready, image_topic={image_topic}, trigger_topic={trigger_topic}")
+
+    def on_trigger(self, msg: String) -> None:
+        self.triggered = True
 
     def on_image(self, msg: CompressedImage) -> None:
         now = time.monotonic()
-        if self.inflight or now - self.last_request_at < float(self.get_parameter("min_interval_seconds").value):
+        due = now - self.last_request_at >= float(self.get_parameter("min_interval_seconds").value)
+        if self.inflight or not (due or self.triggered):
             return
         self.last_request_at = now
         self.inflight = True
+        self.triggered = False
         image_bytes = bytes(msg.data)
         threading.Thread(target=self.analyze_image, args=(image_bytes, msg.format), daemon=True).start()
 
     def analyze_image(self, image_bytes: bytes, image_format: str) -> None:
         try:
-            result = self.call_vlm(image_bytes, image_format)
-            self.observation_pub.publish(String(data=result))
+            content = self.call_vlm(image_bytes, image_format)
+            observation = self.parse_observation(content)
+            self.observation_pub.publish(String(data=json.dumps(observation, ensure_ascii=False)))
         except Exception as exc:
             self.get_logger().warning(f"vlm request failed: {exc}")
         finally:
             self.inflight = False
+
+    def parse_observation(self, content: str) -> Dict[str, Any]:
+        max_chars = int(self.get_parameter("summary_max_chars").value)
+        text = content.strip()
+        risk = False
+        summary = text
+        upper = text.upper()
+        if upper.startswith("RISK:"):
+            risk = True
+            summary = text[len("RISK:"):].strip()
+        elif upper.startswith("NORMAL:"):
+            risk = False
+            summary = text[len("NORMAL:"):].strip()
+        summary = summary[:max_chars]
+        return {"risk": risk, "summary": summary, "raw": text}
 
     def call_vlm(self, image_bytes: bytes, image_format: str) -> str:
         api_base_url = self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
@@ -75,7 +111,7 @@ class VlmClientNode(Node):
                     ],
                 }
             ],
-            "max_tokens": 180,
+            "max_tokens": 120,
             "temperature": 0.1,
         }
         headers = {"Content-Type": "application/json"}

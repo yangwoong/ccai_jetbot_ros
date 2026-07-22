@@ -8,6 +8,35 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 
 
+COCO_CLASSES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat",
+    "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack",
+    "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+    "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket",
+    "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair",
+    "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator",
+    "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
+]
+
+# Exact-match only: short/ambiguous pronouns that would false-positive as substrings
+# of unrelated words (e.g. "저" inside "저 가방을 따라가"), so these never shadow a
+# real object alias below.
+PERSON_ALIASES = {"person", "사람", "me", "나", "저", "사람을", "나를"}
+
+# Substring-matched: distinct enough multi-character nouns that collisions are unlikely.
+OBJECT_ALIASES = {
+    "가방": "backpack", "배낭": "backpack", "물병": "bottle",
+    "의자": "chair", "머그컵": "cup", "컵": "cup",
+    "휴대폰": "cell phone", "핸드폰": "cell phone", "스마트폰": "cell phone",
+    "책": "book", "우산": "umbrella", "시계": "clock", "노트북": "laptop",
+    "자동차": "car", "자전거": "bicycle", "강아지": "dog", "고양이": "cat",
+    "박스": "suitcase", "상자": "suitcase",
+}
+
+
 class VisionNavNode(Node):
     def __init__(self) -> None:
         super().__init__("vision_nav_node")
@@ -22,19 +51,31 @@ class VisionNavNode(Node):
         self.declare_parameter("person_detect_every_n_frames", 5)
         self.declare_parameter("follow_target_area", 0.18)
         self.declare_parameter("follow_min_area", 0.035)
+        self.declare_parameter("yolo_model_path", "data/models/yolov8n.onnx")
+        self.declare_parameter("yolo_input_size", 320)
+        self.declare_parameter("yolo_confidence", 0.45)
+        self.declare_parameter("yolo_nms_threshold", 0.45)
+        self.declare_parameter("yolo_detect_every_n_frames", 3)
+        self.declare_parameter("obstacle_box_min_area", 0.05)
+        self.declare_parameter("obstacle_path_bottom_fraction", 0.5)
+        self.declare_parameter("obstacle_trigger_min_interval_seconds", 4.0)
 
         self.cv2 = None
         self.np = None
         self.hog = None
+        self.yolo_net = None
         self.mode = "idle"
         self.target = ""
         self.frame_count = 0
         self.last_valid_frame_at = 0.0
         self.last_person = None
+        self.last_detections = []
+        self.last_obstacle_trigger_at = 0.0
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
+        self.trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("image_topic").value), self.on_image, 2)
         self.create_subscription(String, "/ccai/status", self.on_robot_status, 10)
         self.create_timer(0.5, self.watchdog)
@@ -52,6 +93,25 @@ class VisionNavNode(Node):
             self.hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
         except Exception as exc:
             self.publish_event("vision unavailable: {0}".format(exc))
+            return
+        self.init_yolo()
+
+    def init_yolo(self) -> None:
+        import os
+
+        model_path = str(self.get_parameter("yolo_model_path").value)
+        if not os.path.exists(model_path):
+            self.publish_event(
+                "yolo model not found at {0}; using HOG person detector only "
+                "(run scripts/download_yolo_model.sh to enable YOLO)".format(model_path)
+            )
+            return
+        try:
+            self.yolo_net = self.cv2.dnn.readNetFromONNX(model_path)
+            self.publish_event("yolo model loaded: {0}".format(model_path))
+        except Exception as exc:
+            self.yolo_net = None
+            self.publish_event("yolo model load failed: {0}".format(exc))
 
     def on_robot_status(self, msg: String) -> None:
         try:
@@ -108,9 +168,18 @@ class VisionNavNode(Node):
         twist = Twist()
         stop_threshold = float(self.get_parameter("obstacle_stop_edge_density").value)
         turn_speed = float(self.get_parameter("turn_speed").value)
+
+        yolo_obstacle = self.detect_path_obstacle(frame)
+        if yolo_obstacle is not None:
+            twist.angular.z = -turn_speed if left_density < right_density else turn_speed
+            detail = "yolo obstacle: {0} area={1:.3f}".format(yolo_obstacle[0], yolo_obstacle[1])
+            self.maybe_trigger_vlm(detail)
+            return twist, detail
+
         if obstacle_density > stop_threshold:
             twist.angular.z = -turn_speed if left_density < right_density else turn_speed
             detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}".format(obstacle_density, left_density, right_density)
+            self.maybe_trigger_vlm(detail)
             return twist, detail
 
         # Steer away from visual clutter. Lower edge density is treated as clearer floor/path.
@@ -122,14 +191,57 @@ class VisionNavNode(Node):
         )
         return twist, detail
 
-    def compute_follow_command(self, frame):
-        person = self.detect_person(frame)
-        twist = Twist()
-        if person is None:
-            twist.angular.z = float(self.get_parameter("turn_speed").value)
-            return twist, "person not found, searching"
+    def detect_path_obstacle(self, frame):
+        """Return (class_name, area_fraction) if a YOLO detection blocks the drivable path ahead."""
+        if self.yolo_net is None:
+            return None
+        every = max(int(self.get_parameter("yolo_detect_every_n_frames").value), 1)
+        if self.frame_count % every != 0:
+            detections = self.last_detections
+        else:
+            detections = self.run_yolo(frame)
+            self.last_detections = detections
+        if not detections:
+            return None
 
-        x, y, w, h = person
+        frame_h, frame_w = frame.shape[:2]
+        bottom_fraction = float(self.get_parameter("obstacle_path_bottom_fraction").value)
+        min_area = float(self.get_parameter("obstacle_box_min_area").value)
+        path_left = frame_w / 3.0
+        path_right = frame_w * 2.0 / 3.0
+        path_top = frame_h * (1.0 - bottom_fraction)
+
+        best = None
+        for class_id, confidence, x, y, w, h in detections:
+            cx = x + w / 2.0
+            cy = y + h / 2.0
+            area = float(w * h) / float(frame_w * frame_h)
+            if area < min_area:
+                continue
+            if not (path_left <= cx <= path_right and cy >= path_top):
+                continue
+            if best is None or area > best[1]:
+                class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else "object"
+                best = (class_name, area)
+        return best
+
+    def maybe_trigger_vlm(self, detail: str) -> None:
+        min_interval = float(self.get_parameter("obstacle_trigger_min_interval_seconds").value)
+        now = time.monotonic()
+        if now - self.last_obstacle_trigger_at < min_interval:
+            return
+        self.last_obstacle_trigger_at = now
+        self.trigger_pub.publish(String(data="obstacle: " + detail))
+
+    def compute_follow_command(self, frame):
+        target_class = self.resolve_target_class()
+        box = self.detect_target(frame, target_class)
+        twist = Twist()
+        if box is None:
+            twist.angular.z = float(self.get_parameter("turn_speed").value)
+            return twist, "{0} not found, searching".format(target_class)
+
+        x, y, w, h = box
         frame_h, frame_w = frame.shape[:2]
         cx = x + w / 2.0
         offset = (cx - frame_w / 2.0) / max(frame_w / 2.0, 1.0)
@@ -144,7 +256,100 @@ class VisionNavNode(Node):
             twist.linear.x = float(self.get_parameter("follow_linear_speed").value) * 0.6
         else:
             twist.linear.x = 0.0
-        return twist, "person x={0}, y={1}, w={2}, h={3}, area={4:.3f}, offset={5:.2f}".format(x, y, w, h, area, offset)
+        return twist, "{0} x={1}, y={2}, w={3}, h={4}, area={5:.3f}, offset={6:.2f}".format(
+            target_class, x, y, w, h, area, offset
+        )
+
+    def resolve_target_class(self) -> str:
+        target = (self.target or "").strip().lower()
+        if not target or target in PERSON_ALIASES:
+            return "person"
+        for alias, class_name in OBJECT_ALIASES.items():
+            if alias in target:
+                return class_name
+        for name in COCO_CLASSES:
+            if name in target or target in name:
+                return name
+        return "person"
+
+    def detect_target(self, frame, target_class: str):
+        if self.yolo_net is not None:
+            every = max(int(self.get_parameter("yolo_detect_every_n_frames").value), 1)
+            if self.frame_count % every != 0 and self.last_detections:
+                detections = self.last_detections
+            else:
+                detections = self.run_yolo(frame)
+                self.last_detections = detections
+            box = self.best_detection_box(frame, detections, target_class)
+            if box is not None or target_class != "person":
+                return box
+        if target_class == "person":
+            return self.detect_person(frame)
+        return None
+
+    def best_detection_box(self, frame, detections, target_class: str):
+        frame_h, frame_w = frame.shape[:2]
+        center_x = frame_w / 2.0
+        best = None
+        best_score = -1.0
+        for class_id, confidence, x, y, w, h in detections:
+            class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else ""
+            if class_name != target_class:
+                continue
+            area = w * h
+            center_penalty = abs((x + w / 2.0) - center_x)
+            score = area - center_penalty * 2.0
+            if score > best_score:
+                best_score = score
+                best = (int(x), int(y), int(w), int(h))
+        return best
+
+    def run_yolo(self, frame):
+        """Run the YOLO ONNX model and return [(class_id, confidence, x, y, w, h)] in frame pixel coordinates."""
+        try:
+            size = int(self.get_parameter("yolo_input_size").value)
+            frame_h, frame_w = frame.shape[:2]
+            blob = self.cv2.dnn.blobFromImage(frame, 1.0 / 255.0, (size, size), swapRB=True, crop=False)
+            self.yolo_net.setInput(blob)
+            output = self.yolo_net.forward()
+        except Exception as exc:
+            self.publish_event("yolo inference failed: {0}".format(exc))
+            return []
+
+        # YOLOv8 ONNX export shape: (1, 4 + num_classes, num_boxes)
+        output = output[0]
+        if output.shape[0] < output.shape[1]:
+            output = output.transpose()
+
+        scale_x = frame_w / float(size)
+        scale_y = frame_h / float(size)
+        confidence_threshold = float(self.get_parameter("yolo_confidence").value)
+        nms_threshold = float(self.get_parameter("yolo_nms_threshold").value)
+
+        boxes = []
+        confidences = []
+        class_ids = []
+        for row in output:
+            scores = row[4:]
+            class_id = int(self.np.argmax(scores))
+            confidence = float(scores[class_id])
+            if confidence < confidence_threshold:
+                continue
+            cx, cy, w, h = row[:4]
+            x = (cx - w / 2.0) * scale_x
+            y = (cy - h / 2.0) * scale_y
+            boxes.append([int(x), int(y), int(w * scale_x), int(h * scale_y)])
+            confidences.append(confidence)
+            class_ids.append(class_id)
+
+        if not boxes:
+            return []
+        indices = self.cv2.dnn.NMSBoxes(boxes, confidences, confidence_threshold, nms_threshold)
+        detections = []
+        for index in self.np.array(indices).flatten():
+            x, y, w, h = boxes[int(index)]
+            detections.append((class_ids[int(index)], confidences[int(index)], x, y, w, h))
+        return detections
 
     def detect_person(self, frame):
         every = max(int(self.get_parameter("person_detect_every_n_frames").value), 1)
@@ -213,4 +418,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

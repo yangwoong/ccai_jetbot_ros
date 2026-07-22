@@ -77,6 +77,14 @@ vision_nav_node:
     person_detect_every_n_frames: 5
     follow_target_area: 0.18
     follow_min_area: 0.035
+    yolo_model_path: "data/models/yolov8n.onnx"
+    yolo_input_size: 320
+    yolo_confidence: 0.45
+    yolo_nms_threshold: 0.45
+    yolo_detect_every_n_frames: 3
+    obstacle_box_min_area: 0.05
+    obstacle_path_bottom_fraction: 0.5
+    obstacle_trigger_min_interval_seconds: 4.0
 
 vlm_client_node:
   ros__parameters:
@@ -84,8 +92,10 @@ vlm_client_node:
     api_key: ""
     model: ""
     image_topic: "/image_raw/compressed"
-    prompt: "Describe patrol-relevant safety issues in this robot camera image. Be concise."
-    min_interval_seconds: 3.0
+    trigger_topic: "/ccai/vlm_trigger"
+    prompt: "You are monitoring a patrol robot's camera. Reply with exactly one line: start with 'RISK:' if you see something dangerous or unusual (person down, fire, smoke, collision risk, intruder, blocked path), otherwise start with 'NORMAL:'. Follow the prefix with a summary in Korean of 50 characters or fewer. No markdown, no extra lines."
+    summary_max_chars: 50
+    min_interval_seconds: 5.0
     request_timeout_seconds: 20.0
 
 llm_control_node:
