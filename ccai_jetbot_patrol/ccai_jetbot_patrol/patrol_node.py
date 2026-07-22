@@ -36,6 +36,8 @@ class PatrolNode(Node):
         self.declare_parameter("speed_step", 0.2)
         self.declare_parameter("min_speed_scale", 0.3)
         self.declare_parameter("max_speed_scale", 2.0)
+        self.declare_parameter("speed_ramp_seconds", 1.5)
+        self.declare_parameter("speed_ramp_min_factor", 0.35)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -170,7 +172,10 @@ class PatrolNode(Node):
             cycle = max(forward_seconds + turn_seconds, 0.1)
             phase = elapsed % cycle
             if phase < forward_seconds:
-                twist.linear.x = linear_speed
+                # Ramp up from a crawl at the start of every forward run (including
+                # right after an obstacle turn) instead of jumping straight to full
+                # speed, so a lingering obstacle gets less of an impact if still close.
+                twist.linear.x = linear_speed * self.ramp_factor(phase)
             else:
                 twist.angular.z = angular_speed
         elif self.state == PatrolState.INSPECTING:
@@ -183,14 +188,15 @@ class PatrolNode(Node):
             turn_seconds = float(self.get_parameter("manual_turn_seconds").value)
             is_turn = self.manual_kind in {"turn_left", "turn_right"}
             duration = turn_seconds if is_turn else move_seconds
-            if time.monotonic() - self.state_changed_at >= duration:
+            manual_elapsed = time.monotonic() - self.state_changed_at
+            if manual_elapsed >= duration:
                 self.set_state(PatrolState.STOPPED)
                 self.stop_motion()
                 return
             if self.manual_kind == "move_forward":
-                twist.linear.x = linear_speed
+                twist.linear.x = linear_speed * self.ramp_factor(manual_elapsed)
             elif self.manual_kind == "move_backward":
-                twist.linear.x = -linear_speed
+                twist.linear.x = -linear_speed * self.ramp_factor(manual_elapsed)
             elif self.manual_kind == "turn_left":
                 twist.angular.z = -angular_speed
             elif self.manual_kind == "turn_right":
@@ -200,6 +206,11 @@ class PatrolNode(Node):
             return
 
         self.cmd_vel_pub.publish(twist)
+
+    def ramp_factor(self, elapsed_seconds: float) -> float:
+        ramp_seconds = float(self.get_parameter("speed_ramp_seconds").value)
+        min_factor = float(self.get_parameter("speed_ramp_min_factor").value)
+        return clamp(elapsed_seconds / max(ramp_seconds, 0.01), min_factor, 1.0)
 
     def use_recent_vision_cmd(self) -> bool:
         if not bool(self.get_parameter("use_vision_cmd_vel").value):

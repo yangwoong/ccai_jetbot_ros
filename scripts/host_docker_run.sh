@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 CONTAINER_NAME="${CONTAINER_NAME:-ccai-jetbot}"
 HOST_WS="${HOST_WS:-/home/roboat/work/ros2_ws}"
 REPO_DIR="${REPO_DIR:-ccai_jetbot_ros}"
@@ -73,6 +75,10 @@ if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ]; then
   CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT:-10}"
   DOCKER_ARGS+=(--ipc host)
   DOCKER_ARGS+=(-v /tmp:/tmp)
+  # Re-apply the nvargus-daemon fix every time CSI is requested, since it's a host
+  # systemd edit (not part of this repo) that can get reset (reflash, package
+  # update, or a stock unit file quietly reappearing).
+  "${SCRIPT_DIR}/host_fix_nvargus_daemon.sh" || echo "warning: nvargus-daemon auto-fix failed, continuing anyway" >&2
 fi
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-0}"
 

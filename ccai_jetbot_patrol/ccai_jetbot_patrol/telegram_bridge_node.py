@@ -24,8 +24,13 @@ class TelegramBridgeNode(Node):
             self.notify_startup()
 
     def notify_startup(self) -> None:
+        token = self.param_or_env("bot_token", "CCAI_TELEGRAM_BOT_TOKEN", "")
         chat_id = self.param_or_env("allowed_chat_id", "CCAI_TELEGRAM_ALLOWED_CHAT_ID", "")
-        if not chat_id:
+        if not token or not chat_id:
+            self.get_logger().warning(
+                "telegram startup notice skipped: bot_token or allowed_chat_id not set "
+                "(check CCAI_TELEGRAM_BOT_TOKEN / CCAI_TELEGRAM_ALLOWED_CHAT_ID in .env)"
+            )
             return
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.send_message(chat_id, f"robot system online (container started, {now})")
@@ -64,9 +69,14 @@ class TelegramBridgeNode(Node):
     def send_message(self, chat_id: str, text: str) -> None:
         token = self.param_or_env("bot_token", "CCAI_TELEGRAM_BOT_TOKEN", "")
         if not token:
+            self.get_logger().warning("telegram send skipped: bot_token not set")
             return
         try:
-            requests.post(self.api_url("sendMessage"), data={"chat_id": chat_id, "text": text[:3900]}, timeout=5)
+            response = requests.post(self.api_url("sendMessage"), data={"chat_id": chat_id, "text": text[:3900]}, timeout=5)
+            if response.status_code != 200:
+                self.get_logger().warning(
+                    f"telegram send failed: HTTP {response.status_code} {response.text[:200]}"
+                )
             time.sleep(0.1)
         except Exception as exc:
             self.get_logger().warning(f"telegram send failed: {exc}")

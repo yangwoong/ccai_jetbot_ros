@@ -59,6 +59,9 @@ class VisionNavNode(Node):
         self.declare_parameter("obstacle_box_min_area", 0.05)
         self.declare_parameter("obstacle_path_bottom_fraction", 0.5)
         self.declare_parameter("obstacle_trigger_min_interval_seconds", 4.0)
+        self.declare_parameter("speed_ramp_seconds", 1.5)
+        self.declare_parameter("speed_ramp_min_factor", 0.35)
+        self.declare_parameter("camera_alert_min_interval_seconds", 10.0)
 
         self.cv2 = None
         self.np = None
@@ -71,6 +74,8 @@ class VisionNavNode(Node):
         self.last_person = None
         self.last_detections = []
         self.last_obstacle_trigger_at = 0.0
+        self.forward_streak_started_at = 0.0
+        self.last_camera_alert_at = 0.0
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
@@ -147,6 +152,8 @@ class VisionNavNode(Node):
         if frame is None or self.is_invalid_frame(frame):
             self.publish_status("invalid_camera", stop=True)
             self.publish_stop()
+            if self.mode in {"patrolling", "following_person"}:
+                self.publish_event_throttled("camera view is invalid, stopping motion")
             return
 
         self.last_valid_frame_at = time.monotonic()
@@ -193,20 +200,32 @@ class VisionNavNode(Node):
             twist.angular.z = -turn_speed if left_density < right_density else turn_speed
             detail = "yolo obstacle: {0} area={1:.3f}".format(yolo_obstacle[0], yolo_obstacle[1])
             self.maybe_trigger_vlm(detail)
+            self.forward_streak_started_at = 0.0
             return twist, detail
 
         if obstacle_density > stop_threshold:
             twist.angular.z = -turn_speed if left_density < right_density else turn_speed
             detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}".format(obstacle_density, left_density, right_density)
             self.maybe_trigger_vlm(detail)
+            self.forward_streak_started_at = 0.0
             return twist, detail
 
         # Steer away from visual clutter. Lower edge density is treated as clearer floor/path.
+        # Ramp up from a crawl at the start of every forward run (including right
+        # after an obstacle turn above) instead of jumping straight to full speed,
+        # in case an obstacle is still close as the path just cleared.
+        now = time.monotonic()
+        if self.forward_streak_started_at <= 0.0:
+            self.forward_streak_started_at = now
+        ramp_seconds = float(self.get_parameter("speed_ramp_seconds").value)
+        min_factor = float(self.get_parameter("speed_ramp_min_factor").value)
+        ramp_factor = clamp((now - self.forward_streak_started_at) / max(ramp_seconds, 0.01), min_factor, 1.0)
+
         steer = clamp((right_density - left_density) * 2.4, -1.0, 1.0)
-        twist.linear.x = float(self.get_parameter("linear_speed").value)
+        twist.linear.x = float(self.get_parameter("linear_speed").value) * ramp_factor
         twist.angular.z = clamp(steer * float(self.get_parameter("max_angular_speed").value), -0.22, 0.22)
-        detail = "path left={0:.3f}, center={1:.3f}, right={2:.3f}, steer={3:.2f}".format(
-            left_density, center_density, right_density, steer
+        detail = "path left={0:.3f}, center={1:.3f}, right={2:.3f}, steer={3:.2f}, ramp={4:.2f}".format(
+            left_density, center_density, right_density, steer, ramp_factor
         )
         return twist, detail
 
@@ -404,6 +423,7 @@ class VisionNavNode(Node):
         if time.monotonic() - self.last_valid_frame_at > timeout:
             self.publish_stop()
             self.publish_status("camera_timeout", stop=True)
+            self.publish_event_throttled("camera frames stopped arriving, stopping motion")
 
     def publish_stop(self) -> None:
         self.cmd_pub.publish(Twist())
@@ -415,6 +435,14 @@ class VisionNavNode(Node):
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
+
+    def publish_event_throttled(self, text: str) -> None:
+        min_interval = float(self.get_parameter("camera_alert_min_interval_seconds").value)
+        now = time.monotonic()
+        if now - self.last_camera_alert_at < min_interval:
+            return
+        self.last_camera_alert_at = now
+        self.publish_event(text)
 
     def region_density(self, image) -> float:
         return float(image.mean()) / 255.0

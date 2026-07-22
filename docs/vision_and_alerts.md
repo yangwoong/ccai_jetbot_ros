@@ -81,6 +81,25 @@ obstacle_path_bottom_fraction: 0.5
 obstacle_trigger_min_interval_seconds: 4.0
 ```
 
+#### 항상 느린 속도에서 점차 빨라지는 이동 (속도 램프업)
+
+순찰 시작 직후 곧바로 최고 속도로 튀어나가면 바로 앞 장애물에 부딪힐 수 있어서, 모든 전진 이동은 항상 느린 속도에서 시작해 `speed_ramp_seconds` 동안 목표 속도까지 서서히 올라갑니다(`speed_ramp_min_factor`가 시작 속도 비율, 기본 35%). 이 "전진 구간 시작 시각"은 장애물 회피 회전이 일어날 때마다 리셋되므로, **회전 후 다시 전진할 때도 항상 느린 속도부터 다시 시작**합니다 — 방금 피한 장애물이 아직 근처에 있을 수 있기 때문입니다. `patrol_node`의 기본 전진/회전 패턴(비전 없이 순찰할 때)과 자연어 "앞으로 가"/"뒤로 가" 명령에도 동일한 램프업이 적용됩니다(`patrol_node`의 `speed_ramp_seconds`/`speed_ramp_min_factor`).
+
+```yaml
+# vision_nav_node, patrol_node 둘 다 동일한 이름의 파라미터
+speed_ramp_seconds: 1.5
+speed_ramp_min_factor: 0.35
+```
+
+#### 카메라 문제 시 즉시 정지 + 알림
+
+카메라 프레임이 무효(초록 화면, 저대비 등)이거나 일정 시간(`min_valid_frame_seconds`) 프레임이 안 들어오면 `vision_nav_node`는 즉시 정지 명령을 보냅니다(기존 동작). 여기에 더해, 순찰/따라가기 중이면 `camera_alert_min_interval_seconds`(기본 10초) 간격으로 `/ccai/events`에도 알려서 **텔레그램/웹채팅으로 바로 통보**되도록 했습니다 — 이전에는 정지는 됐지만 알림이 없어서 로봇이 왜 멈췄는지 admin이 알 방법이 없었습니다.
+
+```text
+camera view is invalid, stopping motion
+camera frames stopped arriving, stopping motion
+```
+
 ### 지정 사람/물체 따라가기
 
 `follow_person` 미션의 `target`이 비어있거나 "사람"/"나"/"me" 등이면 사람을 따라갑니다. 그 외 값은 COCO 80종 클래스 이름(영문) 또는 자주 쓰는 한국어 단어(가방, 배낭, 의자, 컵, 휴대폰, 책, 우산, 시계, 노트북, 자동차, 자전거, 강아지, 고양이, 박스 등, [vision_nav_node.py](../ccai_jetbot_patrol/ccai_jetbot_patrol/vision_nav_node.py)의 `OBJECT_ALIASES` 참고)과 매칭해서 해당 클래스를 따라갑니다. 매칭되는 게 없으면 사람으로 fallback합니다.
@@ -167,3 +186,35 @@ docker logs --since 5m ccai-jetbot | grep -i telegram
 ```
 
 `CCAI_ENABLE_TELEGRAM`은 이전에는 `CCAI_SAFE_START=1`일 때 기본값이 꺼짐이었는데(문서에는 "안전 모드도 텔레그램은 켜짐"이라고 되어 있어서 실제 동작과 문서가 어긋나 있었습니다), 텔레그램은 하드웨어/카메라와 무관하므로 이제는 안전 모드 여부와 상관없이 기본값이 켜짐(`1`)입니다. 끄고 싶으면 `CCAI_ENABLE_TELEGRAM=0`을 명시하세요. `notify_startup: false`로 이 시작 알림만 끌 수도 있습니다.
+
+시작 알림이든 순찰 이벤트든 텔레그램 전송이 실패하면(토큰/`chat_id` 미설정, 잘못된 토큰, 봇에게 먼저 말을 건 적이 없어서 등) 이전에는 아무 흔적 없이 조용히 사라졌습니다. 이제 `telegram_bridge_node`가 실패 사유를 로그로 남깁니다.
+
+```bash
+docker logs --since 5m ccai-jetbot | grep -i telegram
+```
+
+`telegram send skipped: bot_token not set` / `telegram startup notice skipped: ...` / `telegram send failed: HTTP 4xx ...` 중 하나가 보이면 그게 원인입니다. 특히 HTTP 401/403이면 봇 토큰이 틀렸거나, 관리자가 텔레그램에서 그 봇에게 먼저 아무 메시지나(`/start` 등) 보낸 적이 없는 경우가 많습니다(`docs/connectivity.md`의 chat_id 확인 절차 참고).
+
+## 6. CSI 카메라 호스트 설정 자동 복구
+
+`nvargus-daemon`의 `enableCamInfiniteTimeout=1` 문제(자세한 내용은 `docs/hardware_jetbot.md`)는 호스트 systemd 설정이라 git으로 관리되지 않고, 재플래시/패키지 업데이트/알 수 없는 이유로 다시 나타날 수 있습니다. 이제 이 수정을 스크립트로 자동화했습니다.
+
+```bash
+./scripts/host_fix_nvargus_daemon.sh
+```
+
+이 스크립트는:
+
+- `/etc/systemd/system/nvargus-daemon.service`에 문제의 줄이 있는지 확인하고, 있으면 백업 후 제거 + `daemon-reload` + `nvargus-daemon` 재시작을 합니다.
+- 이미 깨끗하면 아무것도 하지 않고 조용히 끝납니다(반복 실행해도 안전).
+- 다음 두 곳에서 **자동으로** 호출되므로 보통 따로 실행할 필요는 없습니다.
+  - `host_docker_run.sh`가 `CCAI_CAMERA_MODE=csi`로 컨테이너를 띄울 때마다 (수동 재시작 포함)
+  - `systemd/ccai-jetbot.service`가 부팅 시 컨테이너를 띄우기 직전 (`ExecStartPre=+...`로 `User=roboat`인 서비스에서도 root 권한으로 실행되도록 했습니다)
+
+이 스크립트는 호스트에서 직접 실행되므로 (`host_docker_run.sh`가 호출할 때도) 출력은 `docker logs`가 아니라 그 스크립트를 실행한 터미널, 또는 부팅 시 자동 실행이라면 systemd 저널에 남습니다.
+
+```bash
+# host_docker_run.sh를 수동으로 실행했을 때: 그 터미널 출력에 [nvargus-fix] 줄이 보입니다
+# 부팅 자동 실행(systemd)일 때:
+journalctl -u ccai-jetbot.service --since "10 minutes ago" | grep -i nvargus-fix
+```

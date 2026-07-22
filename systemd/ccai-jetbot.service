@@ -11,6 +11,11 @@ User=roboat
 WorkingDirectory=/home/roboat/work/ros2_ws/ccai_jetbot_ros
 EnvironmentFile=-/home/roboat/work/ros2_ws/ccai_jetbot_ros/.env
 Environment=CCAI_SAFE_START=0
+; The leading '+' runs this one command as root regardless of User= above, so
+; the nvargus-daemon fix (edits a root-owned systemd unit) works at boot with
+; no TTY/sudo password needed. host_docker_run.sh also re-runs this fix itself
+; whenever CSI is requested, so restarts via that script stay covered too.
+ExecStartPre=+/home/roboat/work/ros2_ws/ccai_jetbot_ros/scripts/host_fix_nvargus_daemon.sh
 ExecStart=/home/roboat/work/ros2_ws/ccai_jetbot_ros/scripts/host_docker_run.sh
 ExecStop=/usr/bin/docker stop ccai-jetbot
 Restart=on-failure

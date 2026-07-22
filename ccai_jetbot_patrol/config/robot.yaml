@@ -13,6 +13,8 @@ patrol_node:
     speed_step: 0.2
     min_speed_scale: 0.3
     max_speed_scale: 2.0
+    speed_ramp_seconds: 1.5
+    speed_ramp_min_factor: 0.35
 
 jetbot_hardware_node:
   ros__parameters:
@@ -90,6 +92,9 @@ vision_nav_node:
     obstacle_box_min_area: 0.05
     obstacle_path_bottom_fraction: 0.5
     obstacle_trigger_min_interval_seconds: 4.0
+    speed_ramp_seconds: 1.5
+    speed_ramp_min_factor: 0.35
+    camera_alert_min_interval_seconds: 10.0
 
 vlm_client_node:
   ros__parameters:
