@@ -39,6 +39,22 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="go_home", raw=message)
     if lowered in {"follow person", "person follow", "follow me", "사람 따라가", "따라와", "나를 따라와"}:
         return MissionCommand(type="follow_person", target="person", raw=message)
+    if lowered in {"forward", "go forward", "move forward", "전진", "전진해", "앞으로", "앞으로 가", "직진", "직진해"}:
+        return MissionCommand(type="move_forward", raw=message)
+    if lowered in {"backward", "go back", "move backward", "후진", "후진해", "뒤로", "뒤로 가"}:
+        return MissionCommand(type="move_backward", raw=message)
+    if lowered in {"turn left", "좌회전", "좌회전해", "왼쪽으로", "왼쪽으로 돌아"}:
+        return MissionCommand(type="turn_left", raw=message)
+    if lowered in {"turn right", "우회전", "우회전해", "오른쪽으로", "오른쪽으로 돌아"}:
+        return MissionCommand(type="turn_right", raw=message)
+    if lowered in {"turn", "회전", "회전해", "제자리 회전"}:
+        return MissionCommand(type="turn_right", raw=message)
+    if lowered in {"speed up", "faster", "빠르게", "속도 높여", "더 빠르게", "속도를 높여"}:
+        return MissionCommand(type="set_speed", target="up", raw=message)
+    if lowered in {"slow down", "slower", "천천히", "속도 줄여", "더 천천히", "속도를 줄여"}:
+        return MissionCommand(type="set_speed", target="down", raw=message)
+    if lowered in {"analyze", "analyze image", "분석", "영상 분석", "영상분석", "카메라 분석", "지금 상황", "지금 뭐가 보여", "뭐가 보여"}:
+        return MissionCommand(type="analyze", raw=message)
     if lowered.startswith("inspect "):
         return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
     if lowered.startswith("점검 "):
@@ -57,6 +73,22 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="inspect", target=target or "requested target", raw=message)
     if "상태" in lowered or "보고" in lowered:
         return MissionCommand(type="status", raw=message)
+    if "앞으로" in lowered or "전진" in lowered or "직진" in lowered:
+        return MissionCommand(type="move_forward", raw=message)
+    if "뒤로" in lowered or "후진" in lowered:
+        return MissionCommand(type="move_backward", raw=message)
+    if "좌회전" in lowered or ("왼쪽" in lowered and ("회전" in lowered or "돌" in lowered)):
+        return MissionCommand(type="turn_left", raw=message)
+    if "우회전" in lowered or ("오른쪽" in lowered and ("회전" in lowered or "돌" in lowered)):
+        return MissionCommand(type="turn_right", raw=message)
+    if "회전" in lowered or "돌아" in lowered:
+        return MissionCommand(type="turn_right", raw=message)
+    if "빠르게" in lowered or ("속도" in lowered and ("높여" in lowered or "올려" in lowered)):
+        return MissionCommand(type="set_speed", target="up", raw=message)
+    if "천천히" in lowered or ("속도" in lowered and ("줄여" in lowered or "낮춰" in lowered)):
+        return MissionCommand(type="set_speed", target="down", raw=message)
+    if "분석" in lowered or "뭐가 보여" in lowered:
+        return MissionCommand(type="analyze", raw=message)
 
     return MissionCommand(type="say", text=raw, raw=message)
 
@@ -77,12 +109,30 @@ def normalize_command_type(command_type: str) -> str:
         "person_follow": "follow_person",
         "report": "status",
         "state": "status",
+        "forward": "move_forward",
+        "move_forward": "move_forward",
+        "backward": "move_backward",
+        "move_backward": "move_backward",
+        "back": "move_backward",
+        "left": "turn_left",
+        "turn_left": "turn_left",
+        "right": "turn_right",
+        "turn_right": "turn_right",
+        "turn": "turn_right",
+        "speed_up": "set_speed",
+        "speed_down": "set_speed",
+        "set_speed": "set_speed",
+        "analyze": "analyze",
+        "analyse": "analyze",
     }
     return aliases.get(lowered, lowered)
 
 
 def is_direct_robot_command(command: MissionCommand) -> bool:
-    return command.type in {"status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person"}
+    return command.type in {
+        "status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person",
+        "move_forward", "move_backward", "turn_left", "turn_right", "set_speed", "analyze",
+    }
 
 
 def command_to_json(command: MissionCommand) -> str:

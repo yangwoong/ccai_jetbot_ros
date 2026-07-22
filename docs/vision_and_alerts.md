@@ -121,3 +121,49 @@ min_interval_seconds: 5.0
 ros2 topic echo /ccai/vlm_observation
 ros2 topic echo /ccai/events
 ```
+
+## 4. 자연어 이동/속도/분석 명령
+
+웹채팅/텔레그램에서 순찰 시작 없이도 자연어로 개별 동작을 시킬 수 있습니다. `mission.py`의 직접 명령 매칭(빠른 경로)과 LLM 라우팅(그 외 표현) 둘 다로 처리됩니다.
+
+| 동작 | 예시 문장 | 내부 명령 타입 |
+|---|---|---|
+| 전진 | "앞으로 가", "전진해", "직진" | `move_forward` |
+| 후진 | "뒤로 가", "후진해" | `move_backward` |
+| 좌회전 | "좌회전해", "왼쪽으로 돌아" | `turn_left` |
+| 우회전 | "우회전해", "오른쪽으로 돌아" | `turn_right` |
+| 속도 높이기 | "속도 높여", "빠르게" | `set_speed` (up) |
+| 속도 낮추기 | "속도 줄여", "천천히" | `set_speed` (down) |
+| 즉시 영상 분석 | "영상 분석해", "지금 뭐가 보여" | `analyze` |
+
+- 전진/후진은 `manual_move_seconds`(기본 1.5초), 좌/우회전은 `manual_turn_seconds`(기본 0.8초) 동안만 움직이고 자동으로 멈춥니다(관리자가 텍스트로 조작하는 것이라 계속 움직이면 위험하기 때문에 한 번에 짧게 넛지하는 방식입니다). 필요하면 명령을 여러 번 보내면 됩니다.
+- 속도 조절은 `patrol_node`의 `linear_speed`/`angular_speed`에 곱해지는 `speed_scale` 배율을 `speed_step`(기본 0.2)만큼 올리고 내립니다 (`min_speed_scale`~`max_speed_scale`, 기본 0.3~2.0 사이로 clamp).
+- "영상 분석해"는 `/ccai/vlm_trigger`로 즉시 분석을 요청하고, 결과가 오면 위험 여부와 상관없이 `analysis result: ...`로 `/ccai/events`에 발행되어 웹채팅/텔레그램에 그대로 보입니다.
+
+관련 파라미터 (`robot.yaml` → `patrol_node`):
+
+```yaml
+manual_move_seconds: 1.5
+manual_turn_seconds: 0.8
+speed_step: 0.2
+min_speed_scale: 0.3
+max_speed_scale: 2.0
+```
+
+## 5. 텔레그램 알림 동작 확인
+
+`telegram_bridge_node`는 `/ccai/events`로 들어오는 모든 이벤트(카메라/모터/순찰/VLM 등)를 등록된 `allowed_chat_id`로 그대로 전달합니다. 이게 실제로 동작하는지 순찰 이벤트가 나기 전에 바로 확인할 수 있도록, **컨테이너(텔레그램 브리지 노드)가 시작될 때마다** 아래 메시지를 자동으로 한 번 보냅니다.
+
+```text
+robot system online (container started, 2026-07-22 23:40:00)
+```
+
+이 메시지가 안 오면 다음을 확인하세요.
+
+```bash
+docker exec ccai-jetbot printenv | grep CCAI_ENABLE_TELEGRAM   # 1이어야 함
+docker exec ccai-jetbot printenv | grep CCAI_TELEGRAM          # 토큰/chat_id가 비어있지 않아야 함
+docker logs --since 5m ccai-jetbot | grep -i telegram
+```
+
+`CCAI_ENABLE_TELEGRAM`은 이전에는 `CCAI_SAFE_START=1`일 때 기본값이 꺼짐이었는데(문서에는 "안전 모드도 텔레그램은 켜짐"이라고 되어 있어서 실제 동작과 문서가 어긋나 있었습니다), 텔레그램은 하드웨어/카메라와 무관하므로 이제는 안전 모드 여부와 상관없이 기본값이 켜짐(`1`)입니다. 끄고 싶으면 `CCAI_ENABLE_TELEGRAM=0`을 명시하세요. `notify_startup: false`로 이 시작 알림만 끌 수도 있습니다.

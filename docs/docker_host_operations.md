@@ -238,6 +238,16 @@ curl -X POST http://127.0.0.1:8080/api/chat \
   -d '{"message":"status"}'
 ```
 
+이동/속도/영상분석 명령 예 (자연어 표현은 `docs/vision_and_alerts.md`의 "자연어 이동/속도/분석 명령" 절 참고):
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"앞으로 가"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"뒤로 가"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"좌회전해"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"속도 높여"}'
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"영상 분석해"}'
+```
+
 ## 6. 환경변수
 
 호스트 저장소의 `.env`를 컨테이너 실행 시 자동으로 읽습니다.

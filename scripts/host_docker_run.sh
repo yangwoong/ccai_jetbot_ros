@@ -24,11 +24,11 @@ fi
 CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL:-1}"
 CCAI_ENABLE_LLM="${CCAI_ENABLE_LLM:-1}"
 CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB:-1}"
-if [ "${CCAI_SAFE_START}" = "1" ]; then
-  CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-0}"
-else
-  CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-1}"
-fi
+# Telegram touches no hardware/camera/motor, so - unlike CCAI_ENABLE_HARDWARE/
+# CAMERA/VISION/VLM above - there's no safety reason to gate it on safe-start.
+# It previously defaulted OFF under CCAI_SAFE_START=1, contradicting the docs
+# ("안전 모드는 웹/LLM/텔레그램/OTA만 실행") and silently hiding alerts.
+CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-1}"
 CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA:-1}"
 FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN:-1}"
 CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE:-}"

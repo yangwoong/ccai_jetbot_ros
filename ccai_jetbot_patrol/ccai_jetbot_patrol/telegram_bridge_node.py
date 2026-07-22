@@ -1,3 +1,4 @@
+import datetime
 import os
 import time
 
@@ -13,11 +14,21 @@ class TelegramBridgeNode(Node):
         self.declare_parameter("bot_token", os.getenv("CCAI_TELEGRAM_BOT_TOKEN", ""))
         self.declare_parameter("allowed_chat_id", os.getenv("CCAI_TELEGRAM_ALLOWED_CHAT_ID", ""))
         self.declare_parameter("poll_seconds", 2.0)
+        self.declare_parameter("notify_startup", True)
         self.admin_text_pub = self.create_publisher(String, "/ccai/admin_text", 10)
         self.create_subscription(String, "/ccai/events", self.on_event, 10)
         self.offset = 0
         self.create_timer(float(self.get_parameter("poll_seconds").value), self.poll)
         self.get_logger().info("telegram_bridge_node ready")
+        if bool(self.get_parameter("notify_startup").value):
+            self.notify_startup()
+
+    def notify_startup(self) -> None:
+        chat_id = self.param_or_env("allowed_chat_id", "CCAI_TELEGRAM_ALLOWED_CHAT_ID", "")
+        if not chat_id:
+            return
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.send_message(chat_id, f"robot system online (container started, {now})")
 
     def api_url(self, method: str) -> str:
         token = self.param_or_env("bot_token", "CCAI_TELEGRAM_BOT_TOKEN", "")

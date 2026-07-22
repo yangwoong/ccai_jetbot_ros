@@ -8,6 +8,11 @@ patrol_node:
     patrol_turn_seconds: 1.2
     use_vision_cmd_vel: true
     vision_command_timeout_seconds: 0.8
+    manual_move_seconds: 1.5
+    manual_turn_seconds: 0.8
+    speed_step: 0.2
+    min_speed_scale: 0.3
+    max_speed_scale: 2.0
 
 jetbot_hardware_node:
   ros__parameters:
@@ -116,6 +121,7 @@ telegram_bridge_node:
     bot_token: ""
     allowed_chat_id: ""
     poll_seconds: 2.0
+    notify_startup: true
 
 ota_agent_node:
   ros__parameters:

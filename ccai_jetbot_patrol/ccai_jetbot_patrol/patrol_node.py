@@ -17,6 +17,7 @@ class PatrolState(str, Enum):
     INSPECTING = "inspecting"
     RETURNING_HOME = "returning_home"
     STOPPED = "stopped"
+    MANUAL = "manual"
 
 
 class PatrolNode(Node):
@@ -30,6 +31,11 @@ class PatrolNode(Node):
         self.declare_parameter("patrol_turn_seconds", 1.2)
         self.declare_parameter("use_vision_cmd_vel", True)
         self.declare_parameter("vision_command_timeout_seconds", 0.8)
+        self.declare_parameter("manual_move_seconds", 1.5)
+        self.declare_parameter("manual_turn_seconds", 0.8)
+        self.declare_parameter("speed_step", 0.2)
+        self.declare_parameter("min_speed_scale", 0.3)
+        self.declare_parameter("max_speed_scale", 2.0)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -38,10 +44,14 @@ class PatrolNode(Node):
         self.last_vision_cmd = Twist()
         self.last_vision_cmd_at = 0.0
         self.state_changed_at = time.monotonic()
+        self.manual_kind = ""
+        self.speed_scale = 1.0
+        self.pending_analysis = False
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
+        self.vlm_trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
         self.create_subscription(String, "/ccai/mission_command", self.on_mission_command, 10)
         self.create_subscription(String, "/ccai/vlm_observation", self.on_vlm_observation, 10)
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
@@ -79,10 +89,36 @@ class PatrolNode(Node):
         elif command.type == "status":
             self.publish_status()
             self.publish_event(self.status_text())
+        elif command.type in {"move_forward", "move_backward", "turn_left", "turn_right"}:
+            self.start_manual_move(command.type)
+        elif command.type == "set_speed":
+            self.adjust_speed(command.target)
+        elif command.type == "analyze":
+            self.request_analysis()
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
         else:
             self.publish_event(f"unknown command: {command.raw}")
+
+    def start_manual_move(self, kind: str) -> None:
+        self.manual_kind = kind
+        self.set_state(PatrolState.MANUAL)
+        self.publish_event(f"manual move: {kind}")
+
+    def adjust_speed(self, direction: str) -> None:
+        step = float(self.get_parameter("speed_step").value)
+        minimum = float(self.get_parameter("min_speed_scale").value)
+        maximum = float(self.get_parameter("max_speed_scale").value)
+        if direction == "down":
+            self.speed_scale = clamp(self.speed_scale - step, minimum, maximum)
+        else:
+            self.speed_scale = clamp(self.speed_scale + step, minimum, maximum)
+        self.publish_event("speed scale set to {0:.2f}".format(self.speed_scale))
+
+    def request_analysis(self) -> None:
+        self.pending_analysis = True
+        self.vlm_trigger_pub.publish(String(data="on-demand analysis requested"))
+        self.publish_event("requesting camera analysis")
 
     def on_vlm_observation(self, msg: String) -> None:
         try:
@@ -93,7 +129,10 @@ class PatrolNode(Node):
             summary = msg.data
             risk = any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"])
         self.last_vlm_summary = summary
-        if risk and self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON, PatrolState.INSPECTING}:
+        if self.pending_analysis:
+            self.pending_analysis = False
+            self.publish_event(f"analysis result: {summary[:180]}")
+        elif risk and self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON, PatrolState.INSPECTING}:
             self.publish_event(f"attention required: {summary[:180]}")
 
     def on_vision_status(self, msg: String) -> None:
@@ -105,8 +144,8 @@ class PatrolNode(Node):
 
     def drive_loop(self) -> None:
         twist = Twist()
-        linear_speed = float(self.get_parameter("linear_speed").value)
-        angular_speed = float(self.get_parameter("angular_speed").value)
+        linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale
+        angular_speed = float(self.get_parameter("angular_speed").value) * self.speed_scale
 
         if self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON} and self.use_recent_vision_cmd():
             self.cmd_vel_pub.publish(self.last_vision_cmd)
@@ -139,6 +178,23 @@ class PatrolNode(Node):
         elif self.state == PatrolState.RETURNING_HOME:
             twist.linear.x = linear_speed * 0.7
             twist.angular.z = angular_speed * 0.25
+        elif self.state == PatrolState.MANUAL:
+            move_seconds = float(self.get_parameter("manual_move_seconds").value)
+            turn_seconds = float(self.get_parameter("manual_turn_seconds").value)
+            is_turn = self.manual_kind in {"turn_left", "turn_right"}
+            duration = turn_seconds if is_turn else move_seconds
+            if time.monotonic() - self.state_changed_at >= duration:
+                self.set_state(PatrolState.STOPPED)
+                self.stop_motion()
+                return
+            if self.manual_kind == "move_forward":
+                twist.linear.x = linear_speed
+            elif self.manual_kind == "move_backward":
+                twist.linear.x = -linear_speed
+            elif self.manual_kind == "turn_left":
+                twist.angular.z = -angular_speed
+            elif self.manual_kind == "turn_right":
+                twist.angular.z = angular_speed
         elif bool(self.get_parameter("safe_stop_on_idle").value):
             self.stop_motion()
             return
@@ -180,6 +236,10 @@ class PatrolNode(Node):
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
+
+
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
 
 
 def main(args=None) -> None:
