@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -47,10 +48,13 @@ class CameraWorker:
                 self.run_jetbot()
                 return
             except Exception as exc:
-                self.last_error = "jetbot backend failed: {0}".format(exc)
+                self.last_error = (
+                    "jetbot backend failed: {0}; set JETBOT_REPO_PATH=/path/to/jetbot "
+                    "or clone http://github.com/NVIDIA-AI-IOT/jetbot.git"
+                ).format(exc)
                 print(self.last_error, flush=True)
-                if self.args.backend == "jetbot":
-                    return
+                print("python_path=" + ":".join(sys.path), flush=True)
+                print("falling back to OpenCV CSI pipeline", flush=True)
         self.run_opencv()
 
     def run_jetbot(self):
@@ -76,14 +80,16 @@ class CameraWorker:
         while self.running:
             cap = cv2.VideoCapture(self.pipeline, cv2.CAP_GSTREAMER)
             if not cap.isOpened():
-                self.last_error = "open failed"
+                self.last_error = "opencv open failed"
+                print(self.last_error, flush=True)
                 time.sleep(2.0)
                 continue
             self.last_error = ""
             while self.running:
                 ok, frame = cap.read()
                 if not ok or frame is None:
-                    self.last_error = "read failed"
+                    self.last_error = "opencv read failed"
+                    print(self.last_error, flush=True)
                     break
                 ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
                 if ok:

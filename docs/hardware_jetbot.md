@@ -177,8 +177,18 @@ curl http://127.0.0.1:8080/api/camera.jpg --output /tmp/jetbot.jpg
 호스트의 JetBot 공개 코드가 동작한다면 MJPEG 서버는 기본적으로 `jetbot.Camera`를 먼저 시도하고, 실패하면 OpenCV GStreamer로 fallback합니다. JetBot 백엔드만 강제하려면:
 
 ```bash
-CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
+# 최초 1회, 호스트에 JetBot 공개 repo 준비
+cd ~
+[ -d jetbot ] || git clone http://github.com/NVIDIA-AI-IOT/jetbot.git
+
+cd ~/work/ros2_ws/ccai_jetbot_ros
+./scripts/host_csi_mjpeg_stop.sh
+JETBOT_REPO_PATH=$HOME/jetbot CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
 ```
+
+`jetbot backend failed: No module named 'jetbot'`가 나오면 호스트 Python의 `PYTHONPATH`에 JetBot repo가 잡히지 않은 상태입니다. 위처럼 `JETBOT_REPO_PATH=$HOME/jetbot`을 지정하세요. 그래도 실패하면 서버는 OpenCV CSI 파이프라인으로 fallback하며, `/tmp/ccai_csi_mjpeg.log`에 `backend=opencv`, `opencv open failed`, `opencv read failed` 중 어디에서 멈췄는지 남깁니다.
+
+`curl` 저장 옵션은 ASCII 하이픈 2개인 `--output`을 써야 합니다. `—output`처럼 긴 대시가 들어가면 URL 파싱 오류가 납니다.
 
 카메라 토픽 확인:
 

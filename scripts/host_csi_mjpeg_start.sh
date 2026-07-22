@@ -6,6 +6,26 @@ PORT="${CCAI_CSI_MJPEG_PORT:-8090}"
 PID_FILE="${CCAI_CSI_MJPEG_PID_FILE:-/tmp/ccai_csi_mjpeg.pid}"
 LOG_FILE="${CCAI_CSI_MJPEG_LOG_FILE:-/tmp/ccai_csi_mjpeg.log}"
 
+JETBOT_REPO_PATH="${JETBOT_REPO_PATH:-}"
+JETBOT_PYTHONPATHS=()
+for path in \
+  "${JETBOT_REPO_PATH}" \
+  "${HOME:-}/jetbot" \
+  "/home/roboat/jetbot" \
+  "/home/roboat/work/jetbot" \
+  "/home/roboat/work/ros2_ws/jetbot"; do
+  [ -n "${path}" ] || continue
+  [ -d "${path}/jetbot" ] || continue
+  JETBOT_PYTHONPATHS+=("${path}")
+done
+
+if [ "${#JETBOT_PYTHONPATHS[@]}" -gt 0 ]; then
+  JETBOT_PATH_JOINED="$(IFS=:; echo "${JETBOT_PYTHONPATHS[*]}")"
+  export PYTHONPATH="${JETBOT_PATH_JOINED}${PYTHONPATH:+:${PYTHONPATH}}"
+else
+  JETBOT_PATH_JOINED=""
+fi
+
 if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" >/dev/null 2>&1; then
   echo "CSI MJPEG server already running, pid=$(cat "${PID_FILE}")"
   echo "url=http://${HOST}:${PORT}/stream.mjpg"
@@ -30,3 +50,8 @@ echo "$!" >"${PID_FILE}"
 echo "started CSI MJPEG server, pid=$(cat "${PID_FILE}")"
 echo "url=http://${HOST}:${PORT}/stream.mjpg"
 echo "log=${LOG_FILE}"
+if [ -n "${JETBOT_PATH_JOINED}" ]; then
+  echo "jetbot_pythonpath=${JETBOT_PATH_JOINED}"
+else
+  echo "jetbot_pythonpath=not found; set JETBOT_REPO_PATH=/path/to/jetbot if using CCAI_CSI_HOST_BACKEND=jetbot"
+fi
