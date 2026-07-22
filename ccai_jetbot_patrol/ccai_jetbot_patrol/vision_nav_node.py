@@ -108,10 +108,29 @@ class VisionNavNode(Node):
             return
         try:
             self.yolo_net = self.cv2.dnn.readNetFromONNX(model_path)
-            self.publish_event("yolo model loaded: {0}".format(model_path))
         except Exception as exc:
             self.yolo_net = None
             self.publish_event("yolo model load failed: {0}".format(exc))
+            return
+        backend = self.select_yolo_backend()
+        self.publish_event("yolo model loaded: {0} ({1})".format(model_path, backend))
+
+    def select_yolo_backend(self) -> str:
+        """Use CUDA/cuDNN acceleration when the OpenCV build supports it (Jetson L4T
+        images ship a CUDA-enabled OpenCV); otherwise CPU. This is the OpenCV DNN
+        module, not the standalone TensorRT runtime - use
+        scripts/verify_yolo_tensorrt.sh to check TensorRT compatibility separately.
+        """
+        try:
+            if self.cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                self.yolo_net.setPreferableBackend(self.cv2.dnn.DNN_BACKEND_CUDA)
+                self.yolo_net.setPreferableTarget(self.cv2.dnn.DNN_TARGET_CUDA_FP16)
+                return "cuda"
+        except Exception as exc:
+            self.get_logger().debug("cuda backend unavailable: {0}".format(exc))
+        self.yolo_net.setPreferableBackend(self.cv2.dnn.DNN_BACKEND_OPENCV)
+        self.yolo_net.setPreferableTarget(self.cv2.dnn.DNN_TARGET_CPU)
+        return "cpu"
 
     def on_robot_status(self, msg: String) -> None:
         try:

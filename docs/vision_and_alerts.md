@@ -46,6 +46,24 @@ yolo model loaded: data/models/yolov8n.onnx
 yolo model not found at data/models/yolov8n.onnx; using HOG person detector only (run scripts/download_yolo_model.sh to enable YOLO)
 ```
 
+`data/models/yolov8n.onnx`는 git에 커밋되어 있으므로(`.gitignore`에서 `data/models/*.onnx`만 예외 처리) `git pull`/`host_docker_update.sh`로 저장소를 받으면 자동으로 같이 동기화됩니다. 별도로 매번 다시 받을 필요가 없습니다.
+
+### GPU 가속 / TensorRT 검증
+
+`vision_nav_node`는 OpenCV가 CUDA로 빌드되어 있으면(`cv2.cuda.getCudaEnabledDeviceCount() > 0`) YOLO 추론에 `DNN_BACKEND_CUDA` + `DNN_TARGET_CUDA_FP16`을 자동으로 사용하고, 아니면 CPU로 폴백합니다. 로드 로그에서 확인합니다.
+
+```text
+yolo model loaded: data/models/yolov8n.onnx (cuda)
+```
+
+이건 OpenCV DNN 모듈의 CUDA 가속이고, NVIDIA TensorRT 런타임 자체를 쓰는 건 아닙니다. 이 ONNX 모델이 Jetson의 TensorRT로 실제 변환/구동까지 되는지 별도로 검증하려면 (컨테이너 안에서, `trtexec`는 L4T/TensorRT 설치에 포함되어 있습니다):
+
+```bash
+./scripts/verify_yolo_tensorrt.sh
+```
+
+이 스크립트는 `trtexec --onnx=data/models/yolov8n.onnx --saveEngine=data/models/yolov8n.engine --fp16`로 엔진을 빌드하고 벤치마크 추론까지 실행합니다. 출력에 `FAILED`가 없고 엔진 파일이 생성되면 이 모델이 이 Jetson에서 TensorRT로 정상 구동된다는 뜻입니다. 생성된 `.engine` 파일은 현재 `vision_nav_node`가 직접 로드하는 대상은 아니며(런타임은 OpenCV DNN을 씀), TensorRT 호환성 확인 및 향후 별도 TensorRT 추론 경로를 붙일 때를 위한 산출물입니다.
+
 ### 자율 순찰 (공간/장애물 감지)
 
 `compute_patrol_command`는 기존 엣지 밀도 기반 주행(카메라 하단부의 Canny 엣지 밀도로 좌/중앙/우 클리어니스를 비교해 조향)을 기본 골격으로 유지하면서, YOLO가 있으면 프레임 하단-중앙의 "주행 경로" 영역(가로 가운데 1/3, 세로 하단 `obstacle_path_bottom_fraction` 비율)에 일정 크기(`obstacle_box_min_area`) 이상의 객체가 검출되면 그걸 장애물로 우선 처리해 회전시킵니다. 두 방식이 서로 보완하므로 YOLO 모델이 없어도 기존처럼 동작합니다.
