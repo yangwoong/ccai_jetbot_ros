@@ -96,6 +96,7 @@ OLED가 보통 `0x3c`로 보이면 정상입니다.
 camera_node:
   ros__parameters:
     camera_index: 0
+    camera_mode: "usb"
     use_gstreamer: false
     force_v4l2: true
     width: 320
@@ -109,10 +110,15 @@ CSI 카메라를 쓰면:
 ```yaml
 camera_node:
   ros__parameters:
+    camera_mode: "csi"
     use_gstreamer: true
 ```
 
-CSI 카메라 컨테이너 실행에는 `/tmp/argus_socket` 접근이 필요합니다. `scripts/host_docker_run.sh`는 호스트에 `/tmp/argus_socket`이 있으면 자동으로 컨테이너에 마운트합니다.
+CSI 카메라 컨테이너 실행에는 `/tmp/argus_socket` 접근과 NVIDIA 런타임이 필요할 수 있습니다. `scripts/host_docker_run.sh`는 `CCAI_CAMERA_MODE=csi`일 때 호스트에 `/tmp/argus_socket`이 있으면 자동으로 컨테이너에 마운트하고 `--runtime nvidia`를 사용합니다.
+
+```bash
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
+```
 
 카메라 토픽 확인:
 
@@ -126,7 +132,7 @@ ros2 topic hz /image_raw/compressed
 ./scripts/host_docker_diag.sh
 ```
 
-`camera_backend: "auto"`는 `v4l2_mjpg`, `v4l2_yuyv`, `v4l2_default`, `default` 순서로 재시도합니다. CSI 카메라면 `use_gstreamer: true`를 설정하면 `csi_gstreamer` 후보도 추가됩니다.
+`camera_backend: "auto"`에서 `camera_mode: "usb"`는 V4L2 후보만 재시도합니다. `camera_mode: "csi"`는 `nvarguscamerasrc` CSI 후보만 사용하므로 USB `/dev/video0`와 섞이지 않습니다.
 
 웹 이미지 확인:
 

@@ -13,13 +13,28 @@ def env_enabled(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def camera_parameters():
+    mode = os.environ.get("CCAI_CAMERA_MODE", "usb").lower()
+    params = {
+        "camera_mode": mode,
+        "use_gstreamer": mode in {"csi", "auto"},
+    }
+    backend = os.environ.get("CCAI_CAMERA_BACKEND")
+    if backend:
+        params["camera_backend"] = backend
+    index = os.environ.get("CCAI_CAMERA_INDEX")
+    if index:
+        params["camera_index"] = int(index)
+    return params
+
+
 def generate_launch_description():
     config = PathJoinSubstitution([FindPackageShare("ccai_jetbot_patrol"), "config", "robot.yaml"])
     nodes = []
     if env_enabled("CCAI_ENABLE_HARDWARE", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="jetbot_hardware_node", name="jetbot_hardware_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_CAMERA", True):
-        nodes.append(Node(package="ccai_jetbot_patrol", executable="camera_node", name="camera_node", parameters=[config], output="screen"))
+        nodes.append(Node(package="ccai_jetbot_patrol", executable="camera_node", name="camera_node", parameters=[config, camera_parameters()], output="screen"))
     if env_enabled("CCAI_ENABLE_VISION", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="vision_nav_node", name="vision_nav_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_PATROL", True):

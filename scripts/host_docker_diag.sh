@@ -5,6 +5,28 @@ CONTAINER_NAME="${CONTAINER_NAME:-ccai-jetbot}"
 
 echo "[host] container"
 docker ps --filter "name=${CONTAINER_NAME}" --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
+CONTAINER_RUNNING=0
+if docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
+  CONTAINER_RUNNING=1
+fi
+
+echo
+echo "[host] camera services and previous boot hints"
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active nvargus-daemon 2>/dev/null | sed 's/^/nvargus-daemon: /' || true
+fi
+if command -v journalctl >/dev/null 2>&1; then
+  echo "previous boot kernel/camera faults:"
+  journalctl -k -b -1 --no-pager -n 120 2>/dev/null | grep -Ei "panic|oops|watchdog|brown|thermal|voltage|argus|nvargus|tegra|vi|csi|imx|camera" || true
+  echo "current boot nvargus logs:"
+  journalctl -u nvargus-daemon -b --no-pager -n 80 2>/dev/null || true
+fi
+
+if [ "${CONTAINER_RUNNING}" != "1" ]; then
+  echo
+  echo "[container] skipped because ${CONTAINER_NAME} is not running"
+  exit 0
+fi
 
 echo
 echo "[container] environment and devices"
@@ -13,6 +35,7 @@ set +e
 echo "ROS_LOCALHOST_ONLY(exec env)=${ROS_LOCALHOST_ONLY:-unset}"
 echo "CCAI_ENABLE_HARDWARE=${CCAI_ENABLE_HARDWARE:-unset}"
 echo "CCAI_ENABLE_CAMERA=${CCAI_ENABLE_CAMERA:-unset}"
+echo "CCAI_CAMERA_MODE=${CCAI_CAMERA_MODE:-unset}"
 echo "CCAI_ENABLE_VISION=${CCAI_ENABLE_VISION:-unset}"
 echo "CCAI_ENABLE_VLM=${CCAI_ENABLE_VLM:-unset}"
 echo "ROS_DISTRO=${ROS_DISTRO:-unset}"

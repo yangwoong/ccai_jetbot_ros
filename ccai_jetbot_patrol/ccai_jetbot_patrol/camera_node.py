@@ -13,8 +13,9 @@ class CameraNode(Node):
         super().__init__("camera_node")
         self.declare_parameter("enabled", True)
         self.declare_parameter("camera_index", 0)
+        self.declare_parameter("camera_mode", "usb")
         self.declare_parameter("camera_backend", "auto")
-        self.declare_parameter("use_gstreamer", True)
+        self.declare_parameter("use_gstreamer", False)
         self.declare_parameter("force_v4l2", True)
         self.declare_parameter("capture_width", 640)
         self.declare_parameter("capture_height", 480)
@@ -42,7 +43,7 @@ class CameraNode(Node):
         self.last_error = ""
         self.last_open_attempt = 0.0
 
-        if bool(self.get_parameter("enabled").value):
+        if self.camera_enabled():
             self.open_camera_candidates()
         else:
             self.publish_event("camera node disabled")
@@ -156,8 +157,13 @@ class CameraNode(Node):
         if backend != "auto":
             return [backend]
 
+        mode = str(self.get_parameter("camera_mode").value).lower()
         candidates = []
-        if bool(self.get_parameter("use_gstreamer").value) or os.path.exists("/tmp/argus_socket"):
+        if mode == "csi":
+            candidates.extend(["csi_gstreamer", "csi_gstreamer_legacy"])
+            return candidates
+
+        if mode == "auto" and (bool(self.get_parameter("use_gstreamer").value) or os.path.exists("/tmp/argus_socket")):
             candidates.extend(["csi_gstreamer", "csi_gstreamer_legacy"])
 
         candidates.extend([
@@ -189,6 +195,8 @@ class CameraNode(Node):
         return False
 
     def capture_once(self) -> None:
+        if not self.camera_enabled():
+            return
         if self.cv2 is None or self.capture is None:
             retry_seconds = float(self.get_parameter("capture_retry_seconds").value)
             if time.monotonic() - self.last_open_attempt >= retry_seconds:
@@ -282,12 +290,20 @@ class CameraNode(Node):
 
     def publish_status(self) -> None:
         payload = {
+            "enabled": self.camera_enabled(),
+            "mode": str(self.get_parameter("camera_mode").value),
             "backend": self.active_backend,
             "failed_reads": self.failed_reads,
             "last_error": self.last_error,
             "retry_seconds": float(self.get_parameter("capture_retry_seconds").value),
         }
         self.status_pub.publish(String(data=json.dumps(payload)))
+
+    def camera_enabled(self) -> bool:
+        if not bool(self.get_parameter("enabled").value):
+            return False
+        mode = str(self.get_parameter("camera_mode").value).lower()
+        return mode != "disabled"
 
     def destroy_node(self) -> bool:
         if self.capture is not None:
