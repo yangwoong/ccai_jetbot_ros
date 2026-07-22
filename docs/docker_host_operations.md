@@ -135,6 +135,7 @@ CCAI_VLLM_API_KEY=CHANGE_ME_LONG_RANDOM_KEY
 CCAI_VLLM_MODEL=Qwen/Qwen3-VL-32B-Instruct
 CCAI_TELEGRAM_BOT_TOKEN=...
 CCAI_TELEGRAM_ALLOWED_CHAT_ID=...
+ROS_LOCALHOST_ONLY=1
 ```
 
 `.env` 변경 후에는 컨테이너를 재시작합니다.
@@ -142,3 +143,5 @@ CCAI_TELEGRAM_ALLOWED_CHAT_ID=...
 ```bash
 docker restart ccai-jetbot
 ```
+
+`ddsi_udp_conn_write to udp/... failed` 로그가 반복되면 외부 ROS2/DDS participant로 전송을 시도하다 실패하는 상태입니다. 이 로봇 프로젝트는 웹/텔레그램으로 외부와 통신하므로 기본값 `ROS_LOCALHOST_ONLY=1`을 권장합니다.

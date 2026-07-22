@@ -10,6 +10,8 @@ if [ -f .env ]; then
   set +a
 fi
 
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+
 if [ -f /opt/ros/humble/setup.bash ]; then
   set +u
   source /opt/ros/humble/setup.bash

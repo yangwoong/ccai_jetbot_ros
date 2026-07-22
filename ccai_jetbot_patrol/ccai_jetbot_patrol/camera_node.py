@@ -12,6 +12,7 @@ class CameraNode(Node):
         self.declare_parameter("enabled", True)
         self.declare_parameter("camera_index", 0)
         self.declare_parameter("use_gstreamer", False)
+        self.declare_parameter("force_v4l2", True)
         self.declare_parameter("width", 320)
         self.declare_parameter("height", 240)
         self.declare_parameter("fps", 5.0)
@@ -52,7 +53,10 @@ class CameraNode(Node):
             ).format(width, height)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         else:
-            self.capture = self.cv2.VideoCapture(index)
+            if bool(self.get_parameter("force_v4l2").value):
+                self.capture = self.cv2.VideoCapture(index, self.cv2.CAP_V4L2)
+            else:
+                self.capture = self.cv2.VideoCapture(index)
             self.capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, width)
             self.capture.set(self.cv2.CAP_PROP_FRAME_HEIGHT, height)
             self.capture.set(self.cv2.CAP_PROP_FPS, float(self.get_parameter("fps").value))
@@ -114,4 +118,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-

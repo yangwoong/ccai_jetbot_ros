@@ -24,7 +24,7 @@ ros2 launch ccai_jetbot_patrol patrol.launch.py
 
 ## 모터
 
-`jetbot_hardware_node`는 기본적으로 NVIDIA JetBot Python 패키지의 `jetbot.Robot`을 사용합니다.
+`jetbot_hardware_node`는 기본적으로 `auto` 모드입니다. 먼저 NVIDIA JetBot Python 패키지의 `jetbot.Robot`을 시도하고, 없으면 I2C PCA9685 MotorHAT 직접 제어로 fallback합니다.
 
 컨테이너 안에서 확인:
 
@@ -32,7 +32,15 @@ ros2 launch ccai_jetbot_patrol patrol.launch.py
 python3 -c "from jetbot import Robot; print('jetbot ok')"
 ```
 
-실패하면 현재 컨테이너에 JetBot Python 패키지가 없거나 I2C/GPIO 접근이 막힌 상태입니다. Waveshare JetBot 이미지 또는 NVIDIA JetBot 설치가 필요합니다.
+실패해도 `pca9685 motor backend ready` 로그가 나오면 모터 제어는 계속 동작할 수 있습니다. `pca9685 motor backend unavailable`이면 I2C 접근 또는 `python3-smbus`가 없는 상태입니다.
+
+I2C 확인:
+
+```bash
+docker exec ccai-jetbot bash -c 'i2cdetect -y 1'
+```
+
+MotorHAT/PCA9685가 보통 `0x60`으로 보이면 정상입니다.
 
 수동 모터 테스트:
 
@@ -49,19 +57,24 @@ ros2 topic pub --once /cmd_vel geometry_msgs/msg/Twist \
 ```yaml
 jetbot_hardware_node:
   ros__parameters:
+    motor_backend: "auto"
+    motor_i2c_bus: 1
+    motor_i2c_address: 96
+    left_motor_channel: 1
+    right_motor_channel: 2
     left_trim: 1.0
     right_trim: 1.0
 ```
 
 ## OLED와 LED
 
-Waveshare JetBot AI Kit의 OLED는 SSD1306 계열 128x32 디스플레이입니다. 기본 설정은 I2C bus 0입니다.
+Waveshare JetBot AI Kit의 OLED는 SSD1306 계열 128x32 디스플레이입니다. 기본 설정은 I2C bus 1입니다.
 
 ```yaml
 jetbot_hardware_node:
   ros__parameters:
     oled_enabled: true
-    oled_bus: 0
+    oled_bus: 1
     status_led_pin: -1
 ```
 
@@ -70,7 +83,7 @@ jetbot_hardware_node:
 I2C 확인:
 
 ```bash
-i2cdetect -y 0
+i2cdetect -y 1
 ```
 
 OLED가 보통 `0x3c`로 보이면 정상입니다.
@@ -84,6 +97,7 @@ camera_node:
   ros__parameters:
     camera_index: 0
     use_gstreamer: false
+    force_v4l2: true
     width: 320
     height: 240
     fps: 5.0
@@ -132,4 +146,3 @@ patrol_node:
 ```
 
 값을 너무 크게 잡으면 실내에서 충돌 위험이 있습니다. 처음에는 바퀴를 들어 올린 상태로 테스트하세요.
-

@@ -11,7 +11,11 @@ jetbot_hardware_node:
   ros__parameters:
     enabled: true
     cmd_vel_topic: "/cmd_vel"
-    motor_backend: "jetbot"
+    motor_backend: "auto"
+    motor_i2c_bus: 1
+    motor_i2c_address: 96
+    left_motor_channel: 1
+    right_motor_channel: 2
     max_linear_speed: 0.25
     max_angular_speed: 1.2
     left_trim: 1.0
@@ -20,7 +24,7 @@ jetbot_hardware_node:
     status_led_pin: -1
     status_led_active_high: true
     oled_enabled: true
-    oled_bus: 0
+    oled_bus: 1
     oled_refresh_seconds: 2.0
 
 camera_node:
@@ -28,6 +32,7 @@ camera_node:
     enabled: true
     camera_index: 0
     use_gstreamer: false
+    force_v4l2: true
     width: 320
     height: 240
     fps: 5.0
