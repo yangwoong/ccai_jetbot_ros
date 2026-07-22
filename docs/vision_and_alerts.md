@@ -95,6 +95,8 @@ yolo model loaded: data/models/yolov8n.onnx (cuda)
 docker logs --since 10m ccai-jetbot | grep -i "yolo inference"
 ```
 
+실측에서는 CUDA뿐 아니라 CPU 백엔드도 다른 종류의 assertion(`shape_utils.hpp`의 `total()`)으로 실패했습니다 — 이건 백엔드 문제가 아니라 최신 `ultralytics`가 기본으로 내보내는 ONNX opset/연산 패턴 자체가 이 Jetson의 구형 OpenCV 4.5.0 ONNX 임포터와 안 맞는다는 신호입니다. `scripts/download_yolo_model.sh`를 opset 11 + `simplify=True`로 내보내도록 바꿨습니다(`CCAI_YOLO_ONNX_OPSET`, `CCAI_YOLO_ONNX_SIMPLIFY`로 조정 가능). 이건 OpenCV DNN + 오래된 YOLOv8 export 조합에서 흔히 알려진 완화책이지만, **이 정확한 OpenCV 4.5.0 빌드로 직접 검증하지는 못했습니다** (그 버전을 재현할 수 있는 환경이 없었습니다) — 실제로 CUDA/CPU 둘 다 다시 실패하더라도 위 자동 폴백 덕분에 로봇 동작 자체는 안전하게 유지됩니다(엣지 밀도 회피 + HOG로 계속 동작). 계속 실패하면 YOLOv5(OpenCV DNN과의 호환성이 더 널리 검증된 아키텍처)로 바꾸는 것도 고려할 수 있습니다.
+
 ### 자율 순찰 (공간/장애물 감지)
 
 `compute_patrol_command`는 기존 엣지 밀도 기반 주행(카메라 하단부의 Canny 엣지 밀도로 좌/중앙/우 클리어니스를 비교해 조향)을 기본 골격으로 유지하면서, YOLO가 있으면 프레임 하단-중앙의 "주행 경로" 영역(가로 가운데 1/3, 세로 하단 `obstacle_path_bottom_fraction` 비율)에 일정 크기(`obstacle_box_min_area`) 이상의 객체가 검출되면 그걸 장애물로 우선 처리해 회전시킵니다. 두 방식이 서로 보완하므로 YOLO 모델이 없어도 기존처럼 동작합니다.

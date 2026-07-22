@@ -6,6 +6,11 @@ cd "$(dirname "$0")/.."
 MODEL_NAME="${CCAI_YOLO_MODEL_NAME:-yolov8n}"
 MODEL_PATH="${CCAI_YOLO_MODEL_PATH:-data/models/${MODEL_NAME}.onnx}"
 IMG_SIZE="${CCAI_YOLO_IMG_SIZE:-320}"
+# opset 11 + simplify avoid some dynamic-shape/op patterns that older OpenCV DNN
+# ONNX importers (e.g. the OpenCV 4.5.0 shipped in dustynv L4T r32.7.1 images)
+# fail on with the newer default export from recent ultralytics versions.
+ONNX_OPSET="${CCAI_YOLO_ONNX_OPSET:-11}"
+ONNX_SIMPLIFY="${CCAI_YOLO_ONNX_SIMPLIFY:-1}"
 
 mkdir -p "$(dirname "${MODEL_PATH}")"
 
@@ -59,15 +64,15 @@ fi
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
-echo "exporting ${MODEL_NAME}.onnx (imgsz=${IMG_SIZE}) via ultralytics"
+echo "exporting ${MODEL_NAME}.onnx (imgsz=${IMG_SIZE}, opset=${ONNX_OPSET}, simplify=${ONNX_SIMPLIFY}) via ultralytics"
 (
   cd "${WORKDIR}"
-  "${PYTHON_BIN}" - "${MODEL_NAME}" "${IMG_SIZE}" <<'PY'
+  "${PYTHON_BIN}" - "${MODEL_NAME}" "${IMG_SIZE}" "${ONNX_OPSET}" "${ONNX_SIMPLIFY}" <<'PY'
 import sys
 from ultralytics import YOLO
 
-model_name, img_size = sys.argv[1], int(sys.argv[2])
-YOLO(f"{model_name}.pt").export(format="onnx", imgsz=img_size)
+model_name, img_size, opset, simplify = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4] == "1"
+YOLO(f"{model_name}.pt").export(format="onnx", imgsz=img_size, opset=opset, simplify=simplify)
 PY
 )
 mv "${WORKDIR}/${MODEL_NAME}.onnx" "${MODEL_PATH}"
