@@ -25,6 +25,15 @@ def camera_parameters():
     index = os.environ.get("CCAI_CAMERA_INDEX")
     if index:
         params["camera_index"] = int(index)
+    device = os.environ.get("CCAI_CAMERA_DEVICE")
+    if device:
+        params["camera_device"] = device
+    retry_limit = os.environ.get("CCAI_CAMERA_RETRY_LIMIT")
+    if retry_limit:
+        params["max_open_attempts"] = int(retry_limit)
+    retry_seconds = os.environ.get("CCAI_CAMERA_RETRY_SECONDS")
+    if retry_seconds:
+        params["capture_retry_seconds"] = float(retry_seconds)
     return params
 
 

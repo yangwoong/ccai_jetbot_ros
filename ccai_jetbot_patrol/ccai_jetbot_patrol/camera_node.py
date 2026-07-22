@@ -13,6 +13,7 @@ class CameraNode(Node):
         super().__init__("camera_node")
         self.declare_parameter("enabled", True)
         self.declare_parameter("camera_index", 0)
+        self.declare_parameter("camera_device", "")
         self.declare_parameter("camera_mode", "usb")
         self.declare_parameter("camera_backend", "auto")
         self.declare_parameter("use_gstreamer", False)
@@ -25,6 +26,7 @@ class CameraNode(Node):
         self.declare_parameter("jpeg_quality", 45)
         self.declare_parameter("reopen_after_failures", 5)
         self.declare_parameter("capture_retry_seconds", 3.0)
+        self.declare_parameter("max_open_attempts", 0)
         self.declare_parameter("open_probe_frames", 8)
         self.declare_parameter("reject_invalid_frames", True)
         self.declare_parameter("invalid_green_ratio", 0.85)
@@ -42,6 +44,8 @@ class CameraNode(Node):
         self.active_backend = "none"
         self.last_error = ""
         self.last_open_attempt = 0.0
+        self.open_attempt_rounds = 0
+        self.open_retry_exhausted = False
 
         if self.camera_enabled():
             self.open_camera_candidates()
@@ -64,6 +68,7 @@ class CameraNode(Node):
         capture_width = int(self.get_parameter("capture_width").value)
         capture_height = int(self.get_parameter("capture_height").value)
         index = int(self.get_parameter("camera_index").value)
+        source = self.camera_source()
         backend = self.next_backend()
         self.active_backend = backend
         if backend == "csi_gstreamer":
@@ -82,41 +87,41 @@ class CameraNode(Node):
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_any":
             pipeline = (
-                "v4l2src device=/dev/video{0} ! videoconvert "
+                "v4l2src device={0} ! videoconvert "
                 "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(index)
+            ).format(source)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_mjpg_any":
             pipeline = (
-                "v4l2src device=/dev/video{0} ! image/jpeg ! jpegdec ! videoconvert "
+                "v4l2src device={0} ! image/jpeg ! jpegdec ! videoconvert "
                 "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(index)
+            ).format(source)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_mjpg":
             pipeline = (
-                "v4l2src device=/dev/video{0} ! image/jpeg,width={1},height={2},framerate={3}/1 "
+                "v4l2src device={0} ! image/jpeg,width={1},height={2},framerate={3}/1 "
                 "! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(index, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
+            ).format(source, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_yuyv":
             pipeline = (
-                "v4l2src device=/dev/video{0} ! video/x-raw,format=YUY2,width={1},height={2},framerate={3}/1 "
+                "v4l2src device={0} ! video/x-raw,format=YUY2,width={1},height={2},framerate={3}/1 "
                 "! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
-            ).format(index, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
+            ).format(source, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "v4l2_mjpg":
-            self.capture = self.cv2.VideoCapture(index, self.cv2.CAP_V4L2)
+            self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc("M", "J", "P", "G"))
             self.configure_capture(capture_width, capture_height)
         elif backend == "v4l2_yuyv":
-            self.capture = self.cv2.VideoCapture(index, self.cv2.CAP_V4L2)
+            self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc("Y", "U", "Y", "V"))
             self.configure_capture(capture_width, capture_height)
         elif backend == "v4l2_default":
-            self.capture = self.cv2.VideoCapture(index, self.cv2.CAP_V4L2)
+            self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.configure_capture(capture_width, capture_height)
         else:
-            self.capture = self.cv2.VideoCapture(index)
+            self.capture = self.cv2.VideoCapture(source)
             self.configure_capture(capture_width, capture_height)
 
         if not self.capture or not self.capture.isOpened():
@@ -134,6 +139,16 @@ class CameraNode(Node):
         self.publish_status()
 
     def open_camera_candidates(self) -> None:
+        if self.open_retry_exhausted:
+            return
+        max_attempts = int(self.get_parameter("max_open_attempts").value)
+        if max_attempts > 0 and self.open_attempt_rounds >= max_attempts:
+            self.open_retry_exhausted = True
+            self.last_error = "camera open retry limit reached"
+            self.publish_event("camera open retry limit reached")
+            self.publish_status()
+            return
+        self.open_attempt_rounds += 1
         self.last_open_attempt = time.monotonic()
         for _ in range(len(self.backend_candidates())):
             self.open_camera()
@@ -292,10 +307,13 @@ class CameraNode(Node):
         payload = {
             "enabled": self.camera_enabled(),
             "mode": str(self.get_parameter("camera_mode").value),
+            "device": self.camera_source(),
             "backend": self.active_backend,
             "failed_reads": self.failed_reads,
             "last_error": self.last_error,
             "retry_seconds": float(self.get_parameter("capture_retry_seconds").value),
+            "open_attempt_rounds": self.open_attempt_rounds,
+            "open_retry_exhausted": self.open_retry_exhausted,
         }
         self.status_pub.publish(String(data=json.dumps(payload)))
 
@@ -304,6 +322,12 @@ class CameraNode(Node):
             return False
         mode = str(self.get_parameter("camera_mode").value).lower()
         return mode != "disabled"
+
+    def camera_source(self):
+        device = str(self.get_parameter("camera_device").value)
+        if device:
+            return device
+        return "/dev/video{0}".format(int(self.get_parameter("camera_index").value))
 
     def destroy_node(self) -> bool:
         if self.capture is not None:

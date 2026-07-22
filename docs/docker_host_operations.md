@@ -39,6 +39,9 @@ CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ./scripts/host_docker_run.sh
 # USB 카메라 장치 열기
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=usb ./scripts/host_docker_run.sh
 
+# USB 장치 번호가 /dev/video1이면 직접 지정
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=usb CCAI_CAMERA_DEVICE=/dev/video1 ./scripts/host_docker_run.sh
+
 # CSI 카메라 장치 열기
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
 
@@ -62,6 +65,12 @@ Jetson CSI 카메라는 Argus를 사용하므로, USB `/dev/video0`와 분리해
 
 ```bash
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
+```
+
+USB 카메라를 연결한 뒤 ROS 카메라 노드와 별개로 OpenCV 장치 접근만 확인할 수 있습니다.
+
+```bash
+CCAI_CAMERA_DEVICE=/dev/video0 ./scripts/host_camera_probe.sh
 ```
 
 이 명령에서 Jetson이 재부팅되면 ROS 코드 문제가 아니라 Jetson CSI/Argus/전원/커널 쪽 문제일 가능성이 큽니다. 재부팅 후 아래 로그를 수집합니다.

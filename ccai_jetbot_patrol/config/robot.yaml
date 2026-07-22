@@ -34,6 +34,7 @@ camera_node:
   ros__parameters:
     enabled: true
     camera_index: 0
+    camera_device: ""
     camera_mode: "usb"
     camera_backend: "auto"
     use_gstreamer: false
@@ -46,6 +47,7 @@ camera_node:
     jpeg_quality: 45
     reopen_after_failures: 5
     capture_retry_seconds: 3.0
+    max_open_attempts: 0
     open_probe_frames: 8
     reject_invalid_frames: true
     invalid_green_ratio: 0.85

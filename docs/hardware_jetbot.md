@@ -96,6 +96,7 @@ OLED가 보통 `0x3c`로 보이면 정상입니다.
 camera_node:
   ros__parameters:
     camera_index: 0
+    camera_device: ""
     camera_mode: "usb"
     use_gstreamer: false
     force_v4l2: true
@@ -103,6 +104,23 @@ camera_node:
     height: 240
     fps: 5.0
     jpeg_quality: 45
+```
+
+USB 카메라를 따로 연결해서 사용할 때:
+
+```bash
+# 안전 모드에서 USB 카메라만 실행
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=usb ./scripts/host_docker_run.sh
+
+# 장치가 /dev/video1 등으로 잡히면 직접 지정
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=usb CCAI_CAMERA_DEVICE=/dev/video1 ./scripts/host_docker_run.sh
+```
+
+USB 장치 확인:
+
+```bash
+./scripts/host_docker_diag.sh
+CCAI_CAMERA_DEVICE=/dev/video0 ./scripts/host_camera_probe.sh
 ```
 
 CSI 카메라를 쓰면:
@@ -120,6 +138,8 @@ CSI 카메라 컨테이너 실행에는 `/tmp/argus_socket` 접근과 NVIDIA 런
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
 ```
 
+CSI 모드는 기본적으로 10회만 open/probe를 재시도합니다. Argus 로그에 `Sensor could not be opened` 또는 `V4L2Device not available`이 반복되면 CSI 센서/케이블/Jetson 드라이버 쪽 문제로 보고 USB 카메라 운용을 먼저 확인하세요.
+
 카메라 토픽 확인:
 
 ```bash
@@ -132,7 +152,7 @@ ros2 topic hz /image_raw/compressed
 ./scripts/host_docker_diag.sh
 ```
 
-`camera_backend: "auto"`에서 `camera_mode: "usb"`는 V4L2 후보만 재시도합니다. `camera_mode: "csi"`는 `nvarguscamerasrc` CSI 후보만 사용하므로 USB `/dev/video0`와 섞이지 않습니다.
+`camera_backend: "auto"`에서 `camera_mode: "usb"`는 V4L2 후보만 재시도합니다. `camera_mode: "csi"`는 `nvarguscamerasrc` CSI 후보만 사용하므로 USB `/dev/video0`와 섞이지 않습니다. USB 장치 번호가 바뀌면 `CCAI_CAMERA_DEVICE=/dev/videoN`으로 고정하세요.
 
 웹 이미지 확인:
 

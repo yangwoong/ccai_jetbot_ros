@@ -27,6 +27,9 @@ CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB:-1}"
 CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-1}"
 CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA:-1}"
 FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN:-1}"
+CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE:-}"
+CCAI_CAMERA_RETRY_SECONDS="${CCAI_CAMERA_RETRY_SECONDS:-}"
+CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT:-}"
 if [ -z "${CCAI_CAMERA_MODE:-}" ]; then
   if [ "${CCAI_SAFE_START}" = "1" ]; then
     CCAI_CAMERA_MODE="disabled"
@@ -43,6 +46,7 @@ fi
 
 if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ]; then
   DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-1}"
+  CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT:-10}"
 fi
 DOCKER_RUNTIME_NVIDIA="${DOCKER_RUNTIME_NVIDIA:-0}"
 
@@ -54,8 +58,11 @@ if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ] && [ -
   DOCKER_ARGS+=(-v /tmp/argus_socket:/tmp/argus_socket)
 fi
 
-if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" != "csi" ] && [ -e /dev/video0 ]; then
-  DOCKER_ARGS+=(--device /dev/video0)
+if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" != "csi" ]; then
+  for dev in /dev/video*; do
+    [ -e "${dev}" ] || continue
+    DOCKER_ARGS+=(--device "${dev}")
+  done
 fi
 
 if [ "${CCAI_ENABLE_HARDWARE}" = "1" ]; then
@@ -81,6 +88,9 @@ docker run -d \
   -e CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM}" \
   -e CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA}" \
   -e CCAI_CAMERA_MODE="${CCAI_CAMERA_MODE}" \
+  -e CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE}" \
+  -e CCAI_CAMERA_RETRY_SECONDS="${CCAI_CAMERA_RETRY_SECONDS}" \
+  -e CCAI_CAMERA_RETRY_LIMIT="${CCAI_CAMERA_RETRY_LIMIT}" \
   -e FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN}" \
   -v "${HOST_WS}:/home/workspace" \
   "${DOCKER_ARGS[@]}" \
@@ -89,6 +99,6 @@ docker run -d \
   bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
-echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
+echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"

@@ -21,6 +21,15 @@ if command -v journalctl >/dev/null 2>&1; then
   echo "current boot nvargus logs:"
   journalctl -u nvargus-daemon -b --no-pager -n 80 2>/dev/null || true
 fi
+echo "host video devices:"
+ls -l /dev/video* 2>/dev/null || true
+if command -v v4l2-ctl >/dev/null 2>&1; then
+  for dev in /dev/video*; do
+    [ -e "${dev}" ] || continue
+    echo "host v4l2 formats: ${dev}"
+    v4l2-ctl --device="${dev}" --list-formats-ext 2>/dev/null || true
+  done
+fi
 
 if [ "${CONTAINER_RUNNING}" != "1" ]; then
   echo
@@ -36,6 +45,8 @@ echo "ROS_LOCALHOST_ONLY(exec env)=${ROS_LOCALHOST_ONLY:-unset}"
 echo "CCAI_ENABLE_HARDWARE=${CCAI_ENABLE_HARDWARE:-unset}"
 echo "CCAI_ENABLE_CAMERA=${CCAI_ENABLE_CAMERA:-unset}"
 echo "CCAI_CAMERA_MODE=${CCAI_CAMERA_MODE:-unset}"
+echo "CCAI_CAMERA_DEVICE=${CCAI_CAMERA_DEVICE:-unset}"
+echo "CCAI_CAMERA_RETRY_LIMIT=${CCAI_CAMERA_RETRY_LIMIT:-unset}"
 echo "CCAI_ENABLE_VISION=${CCAI_ENABLE_VISION:-unset}"
 echo "CCAI_ENABLE_VLM=${CCAI_ENABLE_VLM:-unset}"
 echo "ROS_DISTRO=${ROS_DISTRO:-unset}"
@@ -50,7 +61,11 @@ echo "Last invalid camera frame:"
 ls -l /tmp/ccai_camera_last_invalid.jpg 2>/dev/null || echo "no invalid-frame capture"
 if command -v v4l2-ctl >/dev/null 2>&1; then
   echo "v4l2 formats:"
-  v4l2-ctl --device=/dev/video0 --list-formats-ext 2>/dev/null || true
+  for dev in /dev/video*; do
+    [ -e "${dev}" ] || continue
+    echo "${dev}"
+    v4l2-ctl --device="${dev}" --list-formats-ext 2>/dev/null || true
+  done
 else
   echo "v4l2-ctl not installed"
 fi
