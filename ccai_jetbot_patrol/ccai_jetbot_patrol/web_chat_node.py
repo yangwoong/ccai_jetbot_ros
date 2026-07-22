@@ -38,11 +38,13 @@ class WebChatNode(Node):
         self.create_subscription(String, "/ccai/llm_status", self.on_llm_status, 10)
         self.create_subscription(String, "/ccai/llm_response", self.on_llm_response, 10)
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
+        self.create_subscription(String, "/ccai/camera_status", self.on_camera_status, 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("camera_topic").value), self.on_camera_frame, 2)
         self.messages = deque(maxlen=200)
         self.latest_status = "{}"
         self.latest_llm_status = "{}"
         self.latest_vision_status = "{}"
+        self.latest_camera_status = "{}"
         self.latest_camera_frame = None
         self.app = self.build_app()
         self.start_server()
@@ -65,6 +67,9 @@ class WebChatNode(Node):
 
     def on_camera_frame(self, msg: CompressedImage) -> None:
         self.latest_camera_frame = bytes(msg.data)
+
+    def on_camera_status(self, msg: String) -> None:
+        self.latest_camera_status = msg.data
 
     def build_app(self):
         if FastAPI is None:
@@ -90,10 +95,15 @@ class WebChatNode(Node):
                 vision_status_payload = json.loads(self.latest_vision_status)
             except json.JSONDecodeError:
                 vision_status_payload = {"raw": self.latest_vision_status}
+            try:
+                camera_status_payload = json.loads(self.latest_camera_status)
+            except json.JSONDecodeError:
+                camera_status_payload = {"raw": self.latest_camera_status}
             return {
                 "status": status_payload,
                 "llm_status": llm_status_payload,
                 "vision_status": vision_status_payload,
+                "camera_status": camera_status_payload,
                 "messages": list(self.messages),
             }
 
@@ -147,7 +157,7 @@ HTML_PAGE = """
 </head>
 <body>
 <main>
-  <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span><span id="vision">vision</span><span id="llm">llm</span></header>
+  <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span><span id="cameraState">camera</span><span id="vision">vision</span><span id="llm">llm</span></header>
   <img id="camera" src="/api/camera.jpg" alt="JetBot camera">
   <section id="log"></section>
   <form id="form"><input id="message" autocomplete="off" placeholder="status, patrol start, inspect entrance"><button>Send</button></form>
@@ -157,6 +167,7 @@ const log = document.getElementById('log');
 const state = document.getElementById('state');
 const llm = document.getElementById('llm');
 const vision = document.getElementById('vision');
+const cameraState = document.getElementById('cameraState');
 const camera = document.getElementById('camera');
 async function refresh() {
   const res = await fetch('/api/status');
@@ -164,6 +175,7 @@ async function refresh() {
   state.textContent = data.status.state || 'unknown';
   llm.textContent = data.llm_status && data.llm_status.connected ? 'LLM online' : 'LLM offline';
   vision.textContent = data.vision_status && data.vision_status.state ? data.vision_status.state : 'vision unknown';
+  cameraState.textContent = data.camera_status && data.camera_status.backend ? `${data.camera_status.backend} ${data.camera_status.last_error || 'ok'}` : 'camera unknown';
   log.innerHTML = data.messages.map(m => `<p class="msg"><span class="src">${m.source}</span>${m.message}</p>`).join('');
   log.scrollTop = log.scrollHeight;
 }

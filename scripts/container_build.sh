@@ -30,6 +30,7 @@ if [ "${INSTALL_OS_DEPS}" = "1" ]; then
     python3-opencv \
     python3-pil \
     python3-smbus \
+    v4l-utils \
     i2c-tools
 fi
 

@@ -34,6 +34,7 @@ camera_node:
   ros__parameters:
     enabled: true
     camera_index: 0
+    camera_backend: "auto"
     use_gstreamer: false
     force_v4l2: true
     width: 320

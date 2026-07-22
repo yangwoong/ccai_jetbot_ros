@@ -17,6 +17,12 @@ echo "I2C devices:"
 ls -l /dev/i2c* 2>/dev/null || true
 echo "Video devices:"
 ls -l /dev/video* 2>/dev/null || true
+if command -v v4l2-ctl >/dev/null 2>&1; then
+  echo "v4l2 formats:"
+  v4l2-ctl --device=/dev/video0 --list-formats-ext 2>/dev/null || true
+else
+  echo "v4l2-ctl not installed"
+fi
 '
 
 echo
@@ -52,7 +58,7 @@ fi
 
 echo
 echo "[host] recent relevant logs"
-docker logs --since 3m "${CONTAINER_NAME}" 2>&1 | grep -E "pca9685|jetbot|OLED|raw OLED|camera|ddsi|unavailable|failed|ROS_LOCALHOST" || true
+docker logs --since 3m "${CONTAINER_NAME}" 2>&1 | grep -E "pca9685|jetbot|OLED|raw OLED|camera|vision|ddsi|unavailable|failed|invalid|ROS_LOCALHOST" || true
 
 echo
 echo "[host] web checks"

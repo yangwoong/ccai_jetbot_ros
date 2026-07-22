@@ -11,6 +11,7 @@ sudo apt-get install -y \
   python3-pil \
   python3-smbus \
   i2c-tools \
+  v4l-utils \
   ros-humble-geometry-msgs \
   ros-humble-sensor-msgs \
   ros-humble-std-msgs \
