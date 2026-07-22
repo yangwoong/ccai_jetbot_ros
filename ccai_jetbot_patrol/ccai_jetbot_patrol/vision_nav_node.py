@@ -75,7 +75,8 @@ class VisionNavNode(Node):
         self.last_detections = []
         self.last_obstacle_trigger_at = 0.0
         self.forward_streak_started_at = 0.0
-        self.last_camera_alert_at = 0.0
+        self.event_throttle_at = {}
+        self.yolo_cuda_fallback_tried = False
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
@@ -153,7 +154,7 @@ class VisionNavNode(Node):
             self.publish_status("invalid_camera", stop=True)
             self.publish_stop()
             if self.mode in {"patrolling", "following_person"}:
-                self.publish_event_throttled("camera view is invalid, stopping motion")
+                self.publish_event_throttled("camera view is invalid, stopping motion", key="camera")
             return
 
         self.last_valid_frame_at = time.monotonic()
@@ -344,15 +345,16 @@ class VisionNavNode(Node):
 
     def run_yolo(self, frame):
         """Run the YOLO ONNX model and return [(class_id, confidence, x, y, w, h)] in frame pixel coordinates."""
-        try:
-            size = int(self.get_parameter("yolo_input_size").value)
-            frame_h, frame_w = frame.shape[:2]
-            blob = self.cv2.dnn.blobFromImage(frame, 1.0 / 255.0, (size, size), swapRB=True, crop=False)
-            self.yolo_net.setInput(blob)
-            output = self.yolo_net.forward()
-        except Exception as exc:
-            self.publish_event("yolo inference failed: {0}".format(exc))
+        if self.yolo_net is None:
             return []
+        size = int(self.get_parameter("yolo_input_size").value)
+        frame_h, frame_w = frame.shape[:2]
+        try:
+            output = self.run_yolo_inference(frame, size)
+        except Exception as exc:
+            output = self.recover_from_yolo_failure(frame, size, exc)
+            if output is None:
+                return []
 
         # YOLOv8 ONNX export shape: (1, 4 + num_classes, num_boxes)
         output = output[0]
@@ -389,6 +391,32 @@ class VisionNavNode(Node):
             detections.append((class_ids[int(index)], confidences[int(index)], x, y, w, h))
         return detections
 
+    def run_yolo_inference(self, frame, size: int):
+        blob = self.cv2.dnn.blobFromImage(frame, 1.0 / 255.0, (size, size), swapRB=True, crop=False)
+        self.yolo_net.setInput(blob)
+        return self.yolo_net.forward()
+
+    def recover_from_yolo_failure(self, frame, size: int, exc: Exception):
+        """Some OpenCV CUDA DNN builds fail on specific ONNX ops for a given model
+        (seen: 'scale_shift' assertion on this L4T OpenCV build with a YOLOv8
+        export) even though the model loaded fine. Fall back to the CPU backend
+        once rather than spamming an error on every single frame forever; if CPU
+        also fails, disable YOLO entirely and keep using the HOG/edge-density path.
+        """
+        if self.yolo_cuda_fallback_tried:
+            self.publish_event_throttled("yolo inference failing repeatedly: {0}".format(exc), key="yolo")
+            return None
+        self.yolo_cuda_fallback_tried = True
+        self.publish_event("yolo inference failed on current backend ({0}); retrying on CPU".format(exc))
+        try:
+            self.yolo_net.setPreferableBackend(self.cv2.dnn.DNN_BACKEND_OPENCV)
+            self.yolo_net.setPreferableTarget(self.cv2.dnn.DNN_TARGET_CPU)
+            return self.run_yolo_inference(frame, size)
+        except Exception as exc2:
+            self.publish_event("yolo inference failed on CPU too ({0}); disabling YOLO, using HOG/edge-density only".format(exc2))
+            self.yolo_net = None
+            return None
+
     def detect_person(self, frame):
         every = max(int(self.get_parameter("person_detect_every_n_frames").value), 1)
         if self.last_person is not None and self.frame_count % every != 0:
@@ -423,7 +451,7 @@ class VisionNavNode(Node):
         if time.monotonic() - self.last_valid_frame_at > timeout:
             self.publish_stop()
             self.publish_status("camera_timeout", stop=True)
-            self.publish_event_throttled("camera frames stopped arriving, stopping motion")
+            self.publish_event_throttled("camera frames stopped arriving, stopping motion", key="camera")
 
     def publish_stop(self) -> None:
         self.cmd_pub.publish(Twist())
@@ -436,12 +464,13 @@ class VisionNavNode(Node):
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
 
-    def publish_event_throttled(self, text: str) -> None:
+    def publish_event_throttled(self, text: str, key: str = "default") -> None:
         min_interval = float(self.get_parameter("camera_alert_min_interval_seconds").value)
         now = time.monotonic()
-        if now - self.last_camera_alert_at < min_interval:
+        last_at = self.event_throttle_at.get(key, 0.0)
+        if now - last_at < min_interval:
             return
-        self.last_camera_alert_at = now
+        self.event_throttle_at[key] = now
         self.publish_event(text)
 
     def region_density(self, image) -> float:

@@ -64,6 +64,19 @@ yolo model loaded: data/models/yolov8n.onnx (cuda)
 
 이 스크립트는 `trtexec --onnx=data/models/yolov8n.onnx --saveEngine=data/models/yolov8n.engine --fp16`로 엔진을 빌드하고 벤치마크 추론까지 실행합니다. 출력에 `FAILED`가 없고 엔진 파일이 생성되면 이 모델이 이 Jetson에서 TensorRT로 정상 구동된다는 뜻입니다. 생성된 `.engine` 파일은 현재 `vision_nav_node`가 직접 로드하는 대상은 아니며(런타임은 OpenCV DNN을 씀), TensorRT 호환성 확인 및 향후 별도 TensorRT 추론 경로를 붙일 때를 위한 산출물입니다.
 
+#### CUDA 추론이 이 모델/OpenCV 조합에서 깨진 경우 (자동 복구)
+
+일부 L4T OpenCV 빌드(실측: OpenCV 4.5.0)는 이 YOLOv8 ONNX export의 특정 연산(`scale_shift`)을 CUDA DNN 백엔드에서 처리하지 못하고 매 프레임 예외를 던집니다. 모델 로드 자체는 성공하고 `(cuda)`로 표시되기 때문에 실행해보기 전까지는 알 수 없습니다. `vision_nav_node`는 이 실패를 감지하면:
+
+1. 첫 실패 시 한 번만 CPU 백엔드로 전환해서 같은 프레임을 재시도합니다 (이벤트: `yolo inference failed on current backend (...); retrying on CPU`).
+2. CPU에서도 실패하면 YOLO를 완전히 끄고 엣지 밀도 기반 장애물 회피 + HOG 사람 검출로만 동작합니다 (이벤트: `... disabling YOLO, using HOG/edge-density only`).
+
+즉 매 프레임 에러 로그가 무한히 쌓이지 않고, 최소 한 번의 이벤트로 무슨 일이 있었는지 알 수 있습니다. `docker logs`에서 확인:
+
+```bash
+docker logs --since 10m ccai-jetbot | grep -i "yolo inference"
+```
+
 ### 자율 순찰 (공간/장애물 감지)
 
 `compute_patrol_command`는 기존 엣지 밀도 기반 주행(카메라 하단부의 Canny 엣지 밀도로 좌/중앙/우 클리어니스를 비교해 조향)을 기본 골격으로 유지하면서, YOLO가 있으면 프레임 하단-중앙의 "주행 경로" 영역(가로 가운데 1/3, 세로 하단 `obstacle_path_bottom_fraction` 비율)에 일정 크기(`obstacle_box_min_area`) 이상의 객체가 검출되면 그걸 장애물로 우선 처리해 회전시킵니다. 두 방식이 서로 보완하므로 YOLO 모델이 없어도 기존처럼 동작합니다.
