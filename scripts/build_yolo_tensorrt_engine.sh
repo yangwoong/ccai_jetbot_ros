@@ -21,7 +21,7 @@ run_trtexec() {
     --skipInference=false
 }
 
-echo "converting + benchmarking ${MODEL_PATH} with trtexec (this validates the model actually runs under TensorRT on this Jetson)"
+echo "building ${ENGINE_PATH} from ${MODEL_PATH} with trtexec (vision_nav_node loads this engine directly if present)"
 
 if command -v trtexec >/dev/null 2>&1; then
   run_trtexec
@@ -39,4 +39,5 @@ fi
 
 echo
 echo "engine written to: ${ENGINE_PATH}"
-echo "trtexec completing the benchmark pass above (without 'FAILED' in the output) confirms the ONNX graph is fully TensorRT-compatible on this device."
+echo "restart the container (docker restart ccai-jetbot) so vision_nav_node picks it up."
+echo "engines are hardware/TensorRT-version specific - do not copy this file to a different device, and do not commit it to git."

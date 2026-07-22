@@ -66,36 +66,73 @@ yolo model not found at data/models/yolov8n.onnx; using HOG person detector only
 
 `data/models/yolov8n.onnx`는 git에 커밋되어 있으므로(`.gitignore`에서 `data/models/*.onnx`만 예외 처리) `git pull`/`host_docker_update.sh`로 저장소를 받으면 자동으로 같이 동기화됩니다. 별도로 매번 다시 받을 필요가 없습니다.
 
-### GPU 가속 / TensorRT 검증
+### TensorRT 엔진 (기본 경로) / OpenCV DNN·HOG (폴백)
 
-`vision_nav_node`는 OpenCV가 CUDA로 빌드되어 있으면(`cv2.cuda.getCudaEnabledDeviceCount() > 0`) YOLO 추론에 `DNN_BACKEND_CUDA` + `DNN_TARGET_CUDA_FP16`을 자동으로 사용하고, 아니면 CPU로 폴백합니다. 로드 로그에서 확인합니다.
+Jetson Nano(JetPack 4.6.x / L4T r32.7.1)에서 OpenCV DNN 모듈(`cv2.dnn`)로 YOLOv8 ONNX를 CUDA 백엔드로 돌리면 이 플랫폼의 OpenCV 4.5.0 빌드가 특정 연산(`scale_shift`)에서 매 프레임 예외를 던지고, CPU 백엔드로 돌려도 다른 연산(`shape_utils.hpp`의 `total()`)에서 또 실패하는 문제가 실측으로 확인됐습니다. 원인은 OpenCV의 ONNX 임포터 자체가 최신 YOLOv8 export의 연산 패턴을 완전히 지원하지 않는 것이었습니다.
+
+그래서 `vision_nav_node`는 이제 **NVIDIA TensorRT 런타임으로 직접 추론하는 경로를 우선 사용**하고, 안 되면 기존 OpenCV DNN → HOG/엣지 밀도 순서로 내려갑니다 (3단계 폴백, 언제나 항상 켜져 있는 안전망 원칙 유지).
+
+```
+1순위: TensorRT 엔진 (ccai_jetbot_patrol/tensorrt_yolo.py) — data/models/yolov8n.engine
+2순위: OpenCV DNN ONNX (CUDA 우선, 실패 시 CPU) — data/models/yolov8n.onnx
+3순위: HOG 사람 검출 + 엣지 밀도 장애물 회피 (YOLO 전혀 없이도 동작하던 기존 방식)
+```
+
+trtexec(NVIDIA 자체 ONNX→TensorRT 변환기)는 OpenCV의 ONNX 임포터보다 훨씬 폭넓게 연산을 지원하므로, 이 경로를 쓰면 opset/버전 호환성 문제를 근본적으로 우회합니다.
+
+#### TensorRT 엔진 빌드 (Jetson에서 1회 실행)
+
+`.engine` 파일은 `.onnx`와 달리 **하드웨어/TensorRT 버전에 종속적이라 이식이 안 되고, git에도 커밋하지 않습니다.** 반드시 실제 Jetson에서 빌드해야 합니다.
+
+```bash
+cd /home/roboat/work/ros2_ws/ccai_jetbot_ros
+./scripts/build_yolo_tensorrt_engine.sh
+docker restart ccai-jetbot
+```
+
+`data/models/yolov8n.onnx`(이미 git에 커밋되어 있어 `git pull`로 받아짐)를 `trtexec --onnx=... --saveEngine=data/models/yolov8n.engine --fp16`로 변환합니다. `trtexec`는 L4T/JetPack TensorRT 설치에 포함되어 있고, 호스트에 없으면 컨테이너 안에서 자동으로 실행합니다. 성공하면 벤치마크 추론 결과가 출력되고 `data/models/yolov8n.engine`이 생성됩니다.
+
+로드 여부는 이벤트로 확인합니다.
+
+```text
+yolo model loaded via TensorRT: data/models/yolov8n.engine
+```
+
+엔진 파일이 없으면 자동으로 다음 단계(OpenCV DNN ONNX)로 내려갑니다:
 
 ```text
 yolo model loaded: data/models/yolov8n.onnx (cuda)
 ```
 
-이건 OpenCV DNN 모듈의 CUDA 가속이고, NVIDIA TensorRT 런타임 자체를 쓰는 건 아닙니다. 이 ONNX 모델이 Jetson의 TensorRT로 실제 변환/구동까지 되는지 별도로 검증하려면 (컨테이너 안에서, `trtexec`는 L4T/TensorRT 설치에 포함되어 있습니다):
+#### TensorRT 실행 실패 시 (자동 복구)
+
+`ccai_jetbot_patrol/tensorrt_yolo.py`는 TensorRT 7.x(Jetson Nano/JetPack 4.6.x가 쓰는 바인딩 인덱스 기반 API)를 대상으로 NVIDIA 공식 샘플(`samples/python/common.py`)의 표준 버퍼 할당 패턴을 따릅니다. `tensorrt`/`pycuda` 파이썬 모듈은 dusty-nv L4T ROS 이미지에 이미 포함되어 있을 가능성이 높지만(별도 설치가 필요할 수도 있음), 없거나 엔진 로드/추론이 실패하면:
+
+1. 엔진 로드 실패 시 즉시 OpenCV DNN ONNX 경로로 폴백합니다 (이벤트: `tensorrt engine load failed (...); falling back to OpenCV DNN ONNX`).
+2. 추론 도중 실패하면 TensorRT를 그 세션에서 완전히 끄고 OpenCV DNN ONNX로 전환합니다(이벤트: `tensorrt inference failed (...); falling back to OpenCV DNN ONNX/HOG`). ONNX 모델도 아직 안 열려있으면 그 자리에서 엽니다.
+3. OpenCV DNN 쪽도 CUDA→CPU→완전 비활성화의 기존 자동 복구가 그대로 적용됩니다 (아래 참고).
+
+즉 TensorRT가 이 정확한 엔진/JetPack 조합에서 문제가 있어도 로봇은 항상 어떤 형태로든 계속 동작합니다(최소 HOG/엣지 밀도까지는 보장). `docker logs`에서 확인:
 
 ```bash
-./scripts/verify_yolo_tensorrt.sh
+docker logs --since 10m ccai-jetbot | grep -Ei "tensorrt|yolo inference"
 ```
 
-이 스크립트는 `trtexec --onnx=data/models/yolov8n.onnx --saveEngine=data/models/yolov8n.engine --fp16`로 엔진을 빌드하고 벤치마크 추론까지 실행합니다. 출력에 `FAILED`가 없고 엔진 파일이 생성되면 이 모델이 이 Jetson에서 TensorRT로 정상 구동된다는 뜻입니다. 생성된 `.engine` 파일은 현재 `vision_nav_node`가 직접 로드하는 대상은 아니며(런타임은 OpenCV DNN을 씀), TensorRT 호환성 확인 및 향후 별도 TensorRT 추론 경로를 붙일 때를 위한 산출물입니다.
+#### OpenCV DNN 폴백 자체가 실패하는 경우
 
-#### CUDA 추론이 이 모델/OpenCV 조합에서 깨진 경우 (자동 복구)
-
-일부 L4T OpenCV 빌드(실측: OpenCV 4.5.0)는 이 YOLOv8 ONNX export의 특정 연산(`scale_shift`)을 CUDA DNN 백엔드에서 처리하지 못하고 매 프레임 예외를 던집니다. 모델 로드 자체는 성공하고 `(cuda)`로 표시되기 때문에 실행해보기 전까지는 알 수 없습니다. `vision_nav_node`는 이 실패를 감지하면:
+TensorRT 엔진이 없어서(또는 실패해서) OpenCV DNN ONNX 경로로 왔는데 그것도 실패하는 경우의 기존 자동 복구입니다.
 
 1. 첫 실패 시 한 번만 CPU 백엔드로 전환해서 같은 프레임을 재시도합니다 (이벤트: `yolo inference failed on current backend (...); retrying on CPU`).
 2. CPU에서도 실패하면 YOLO를 완전히 끄고 엣지 밀도 기반 장애물 회피 + HOG 사람 검출로만 동작합니다 (이벤트: `... disabling YOLO, using HOG/edge-density only`).
 
-즉 매 프레임 에러 로그가 무한히 쌓이지 않고, 최소 한 번의 이벤트로 무슨 일이 있었는지 알 수 있습니다. `docker logs`에서 확인:
+`scripts/download_yolo_model.sh`는 opset 11 + `simplify=True`로 내보내도록 되어 있습니다(`CCAI_YOLO_ONNX_OPSET`, `CCAI_YOLO_ONNX_SIMPLIFY`로 조정 가능) — OpenCV DNN + YOLOv8 export 조합에서 흔히 알려진 완화책이지만, TensorRT 엔진 경로가 정상 동작하면 이 폴백 단계까지 갈 일은 거의 없습니다.
 
-```bash
-docker logs --since 10m ccai-jetbot | grep -i "yolo inference"
+관련 파라미터 (`robot.yaml` → `vision_nav_node`):
+
+```yaml
+yolo_model_path: "data/models/yolov8n.onnx"
+yolo_engine_path: "data/models/yolov8n.engine"
 ```
-
-실측에서는 CUDA뿐 아니라 CPU 백엔드도 다른 종류의 assertion(`shape_utils.hpp`의 `total()`)으로 실패했습니다 — 이건 백엔드 문제가 아니라 최신 `ultralytics`가 기본으로 내보내는 ONNX opset/연산 패턴 자체가 이 Jetson의 구형 OpenCV 4.5.0 ONNX 임포터와 안 맞는다는 신호입니다. `scripts/download_yolo_model.sh`를 opset 11 + `simplify=True`로 내보내도록 바꿨습니다(`CCAI_YOLO_ONNX_OPSET`, `CCAI_YOLO_ONNX_SIMPLIFY`로 조정 가능). 이건 OpenCV DNN + 오래된 YOLOv8 export 조합에서 흔히 알려진 완화책이지만, **이 정확한 OpenCV 4.5.0 빌드로 직접 검증하지는 못했습니다** (그 버전을 재현할 수 있는 환경이 없었습니다) — 실제로 CUDA/CPU 둘 다 다시 실패하더라도 위 자동 폴백 덕분에 로봇 동작 자체는 안전하게 유지됩니다(엣지 밀도 회피 + HOG로 계속 동작). 계속 실패하면 YOLOv5(OpenCV DNN과의 호환성이 더 널리 검증된 아키텍처)로 바꾸는 것도 고려할 수 있습니다.
 
 ### 자율 순찰 (공간/장애물 감지)
 
@@ -166,6 +203,27 @@ min_interval_seconds: 5.0
 ```
 
 동작에는 `.env`의 `CCAI_VLLM_API_BASE_URL`/`CCAI_VLLM_API_KEY`/`CCAI_VLLM_MODEL`이 설정돼 있어야 하고(`docs/connectivity.md` 참고), `CCAI_ENABLE_VLM=1`로 컨테이너가 떠 있어야 합니다.
+
+### VLM이 응답을 안 하는 경우 (진단 가능하게 수정됨)
+
+기존에는 H200 연결 실패/타임아웃/모델 오류 등이 나면 ROS 로거에만 조용히 남고 텔레그램/웹채팅에는 아무 흔적도 없었습니다(관리자 입장에서는 그냥 "분석이 안 되는" 것으로만 보임). 이제 요청이 실패하면 `error_event_min_interval_seconds`(기본 30초) 간격으로 `/ccai/events`에도 발행되어 웹채팅/텔레그램에 그대로 보입니다.
+
+```text
+vlm request failed: HTTPConnectionPool(host='H200_IP', port=8000): ...
+```
+
+확인 순서:
+
+```bash
+# 1) vlm_client_node 자체가 켜져 있는지
+docker exec ccai-jetbot printenv | grep CCAI_ENABLE_VLM   # 1이어야 함
+
+# 2) H200 연결 상태 (llm_control_node와 같은 엔드포인트를 씀)
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"llm status"}'
+
+# 3) 최근 vlm 관련 로그/이벤트
+docker logs --since 5m ccai-jetbot | grep -i vlm
+```
 
 확인:
 

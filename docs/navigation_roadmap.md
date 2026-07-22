@@ -18,7 +18,7 @@
 
 ## 우선순위 원칙
 
-1. **임무 수행 안정성이 최우선입니다.** 이동 범위 탐색·장애물 회피가 끊김 없이 동작하는 것이 최신 YOLO 버전을 쓰는 것보다 중요합니다. 특정 YOLO 버전/모델이 이 Jetson(OpenCV 4.5.0, CUDA DNN)에서 불안정하면 **주저 없이 더 오래되고 검증된 버전(예: YOLOv8n → YOLOv5n, 또는 opset/입력 크기 조정)으로 낮춥니다.** `vision_nav_node`의 자동 폴백(CUDA 실패 → CPU 재시도 → 실패 시 YOLO 비활성화하고 엣지 밀도 회피 + HOG로 계속 동작, [docs/vision_and_alerts.md](vision_and_alerts.md) 참고)은 이 원칙을 코드로 구현한 것이며, 앞으로 YOLO를 확장할 때도 이 "항상 안전하게 성능이 낮은 방식으로 폴백" 구조를 유지해야 합니다.
+1. **임무 수행 안정성이 최우선입니다.** 이동 범위 탐색·장애물 회피가 끊김 없이 동작하는 것이 최신 YOLO 버전을 쓰는 것보다 중요합니다. OpenCV DNN(`cv2.dnn`)으로 YOLOv8 ONNX를 이 Jetson Nano(OpenCV 4.5.0)에서 돌렸을 때 CUDA/CPU 백엔드 둘 다 실측으로 실패한 적이 있어서, **OpenCV DNN 임포터를 우회하고 NVIDIA 자체 TensorRT 런타임(`trtexec`로 빌드한 `.engine` + `ccai_jetbot_patrol/tensorrt_yolo.py`)으로 전면 전환**했습니다. TensorRT가 이 플랫폼에 맞는 정식 추론 경로이기 때문입니다. 그래도 항상 "TensorRT 엔진 → OpenCV DNN ONNX(CUDA→CPU) → HOG/엣지 밀도"의 3단계 자동 폴백을 유지합니다 — 특정 조합이 불안정하면 주저 없이 더 낮은 단계로 내려가되(필요하면 YOLOv8n → YOLOv5n처럼 모델 자체를 낮추는 것도 포함), 로봇이 어떤 상황에서도 최소한 엣지 밀도 회피 + HOG까지는 계속 동작해야 합니다. 자세한 내용은 [docs/vision_and_alerts.md](vision_and_alerts.md)를 참고하세요.
 2. **LLM(Qwen3-VL-70B)을 최대한 활용합니다.** 현재는 명령 라우팅(`llm_control_node`)과 위험 요약(`vlm_client_node`) 두 곳에만 쓰이고 있습니다. 아래 2단계(지역 라벨링), 4단계(임무 할당 시 지역명 해석), 5단계(이상 상황 설명)에도 VLM 호출을 적극적으로 추가해야 합니다. 모델은 `.env`의 `CCAI_VLLM_MODEL`로 지정하며 기본값을 `Qwen/Qwen3-VL-70B-Instruct`로 맞춰뒀습니다.
 
 ## 단계별 현재 구현 상태

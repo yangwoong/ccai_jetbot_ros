@@ -87,6 +87,7 @@ vision_nav_node:
     follow_target_area: 0.18
     follow_min_area: 0.035
     yolo_model_path: "data/models/yolov8n.onnx"
+    yolo_engine_path: "data/models/yolov8n.engine"
     yolo_input_size: 320
     yolo_confidence: 0.45
     yolo_nms_threshold: 0.45
@@ -109,6 +110,7 @@ vlm_client_node:
     summary_max_chars: 50
     min_interval_seconds: 5.0
     request_timeout_seconds: 20.0
+    error_event_min_interval_seconds: 30.0
 
 llm_control_node:
   ros__parameters:

@@ -33,10 +33,12 @@ class VlmClientNode(Node):
         self.declare_parameter("summary_max_chars", 50)
         self.declare_parameter("min_interval_seconds", 5.0)
         self.declare_parameter("request_timeout_seconds", 20.0)
+        self.declare_parameter("error_event_min_interval_seconds", 30.0)
 
         image_topic = str(self.get_parameter("image_topic").value)
         trigger_topic = str(self.get_parameter("trigger_topic").value)
         self.observation_pub = self.create_publisher(String, "/ccai/vlm_observation", 10)
+        self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.create_subscription(CompressedImage, image_topic, self.on_image, 1)
         self.create_subscription(String, trigger_topic, self.on_trigger, 10)
 
@@ -45,6 +47,7 @@ class VlmClientNode(Node):
         self.triggered = False
         self.pending_question = ""
         self.latest_frame = None
+        self.last_error_event_at = 0.0
         self.get_logger().info(f"vlm_client_node ready, image_topic={image_topic}, trigger_topic={trigger_topic}")
 
     def on_trigger(self, msg: String) -> None:
@@ -78,8 +81,21 @@ class VlmClientNode(Node):
             self.observation_pub.publish(String(data=json.dumps(observation, ensure_ascii=False)))
         except Exception as exc:
             self.get_logger().warning(f"vlm request failed: {exc}")
+            self.report_error_throttled(f"vlm request failed: {exc}")
         finally:
             self.inflight = False
+
+    def report_error_throttled(self, text: str) -> None:
+        # Failures used to only go to the ROS logger, so a misconfigured/unreachable
+        # H200 endpoint silently produced zero observations with no visible trace
+        # in Telegram/web chat. Surface it (rate-limited so a persistent outage
+        # doesn't spam every request).
+        min_interval = float(self.get_parameter("error_event_min_interval_seconds").value)
+        now = time.monotonic()
+        if now - self.last_error_event_at < min_interval:
+            return
+        self.last_error_event_at = now
+        self.event_pub.publish(String(data=text))
 
     def parse_observation(self, content: str, question: str = "") -> Dict[str, Any]:
         max_chars = int(self.get_parameter("summary_max_chars").value)

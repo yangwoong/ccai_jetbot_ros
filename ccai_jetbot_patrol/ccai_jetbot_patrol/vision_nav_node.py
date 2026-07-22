@@ -52,6 +52,7 @@ class VisionNavNode(Node):
         self.declare_parameter("follow_target_area", 0.18)
         self.declare_parameter("follow_min_area", 0.035)
         self.declare_parameter("yolo_model_path", "data/models/yolov8n.onnx")
+        self.declare_parameter("yolo_engine_path", "data/models/yolov8n.engine")
         self.declare_parameter("yolo_input_size", 320)
         self.declare_parameter("yolo_confidence", 0.45)
         self.declare_parameter("yolo_nms_threshold", 0.45)
@@ -67,6 +68,7 @@ class VisionNavNode(Node):
         self.np = None
         self.hog = None
         self.yolo_net = None
+        self.trt_yolo = None
         self.mode = "idle"
         self.target = ""
         self.frame_count = 0
@@ -105,11 +107,26 @@ class VisionNavNode(Node):
     def init_yolo(self) -> None:
         import os
 
+        engine_path = str(self.get_parameter("yolo_engine_path").value)
+        if os.path.exists(engine_path):
+            try:
+                from ccai_jetbot_patrol.tensorrt_yolo import TensorRTYolo
+
+                self.trt_yolo = TensorRTYolo(engine_path)
+                self.publish_event("yolo model loaded via TensorRT: {0}".format(engine_path))
+                return
+            except Exception as exc:
+                self.trt_yolo = None
+                self.publish_event(
+                    "tensorrt engine load failed ({0}); falling back to OpenCV DNN ONNX".format(exc)
+                )
+
         model_path = str(self.get_parameter("yolo_model_path").value)
         if not os.path.exists(model_path):
             self.publish_event(
                 "yolo model not found at {0}; using HOG person detector only "
-                "(run scripts/download_yolo_model.sh to enable YOLO)".format(model_path)
+                "(run scripts/download_yolo_model.sh to enable YOLO, "
+                "scripts/build_yolo_tensorrt_engine.sh for TensorRT)".format(model_path)
             )
             return
         try:
@@ -120,6 +137,9 @@ class VisionNavNode(Node):
             return
         backend = self.select_yolo_backend()
         self.publish_event("yolo model loaded: {0} ({1})".format(model_path, backend))
+
+    def yolo_available(self) -> bool:
+        return self.trt_yolo is not None or self.yolo_net is not None
 
     def select_yolo_backend(self) -> str:
         """Use CUDA/cuDNN acceleration when the OpenCV build supports it (Jetson L4T
@@ -233,7 +253,7 @@ class VisionNavNode(Node):
 
     def detect_path_obstacle(self, frame):
         """Return (class_name, area_fraction) if a YOLO detection blocks the drivable path ahead."""
-        if self.yolo_net is None:
+        if not self.yolo_available():
             return None
         every = max(int(self.get_parameter("yolo_detect_every_n_frames").value), 1)
         if self.frame_count % every != 0:
@@ -313,7 +333,7 @@ class VisionNavNode(Node):
         return "person"
 
     def detect_target(self, frame, target_class: str):
-        if self.yolo_net is not None:
+        if self.yolo_available():
             every = max(int(self.get_parameter("yolo_detect_every_n_frames").value), 1)
             if self.frame_count % every != 0 and self.last_detections:
                 detections = self.last_detections
@@ -345,19 +365,38 @@ class VisionNavNode(Node):
         return best
 
     def run_yolo(self, frame):
-        """Run the YOLO ONNX model and return [(class_id, confidence, x, y, w, h)] in frame pixel coordinates."""
-        if self.yolo_net is None:
-            return []
+        """Run the YOLO model (TensorRT engine if loaded, else OpenCV DNN ONNX) and
+        return [(class_id, confidence, x, y, w, h)] in frame pixel coordinates."""
         size = int(self.get_parameter("yolo_input_size").value)
         frame_h, frame_w = frame.shape[:2]
+
+        if self.trt_yolo is not None:
+            try:
+                blob = self.cv2.dnn.blobFromImage(frame, 1.0 / 255.0, (size, size), swapRB=True, crop=False)
+                output = self.trt_yolo.infer(blob)
+                return self.decode_yolo_output(output, frame_w, frame_h, size)
+            except Exception as exc:
+                self.trt_yolo = None
+                self.publish_event(
+                    "tensorrt inference failed ({0}); falling back to OpenCV DNN ONNX/HOG".format(exc)
+                )
+                # Falls through to the cv2.dnn path below, which loads its own
+                # net lazily from yolo_model_path if not already loaded.
+                if self.yolo_net is None:
+                    self.init_yolo_dnn_fallback()
+
+        if self.yolo_net is None:
+            return []
         try:
             output = self.run_yolo_inference(frame, size)
         except Exception as exc:
             output = self.recover_from_yolo_failure(frame, size, exc)
             if output is None:
                 return []
+        return self.decode_yolo_output(output, frame_w, frame_h, size)
 
-        # YOLOv8 ONNX export shape: (1, 4 + num_classes, num_boxes)
+    def decode_yolo_output(self, output, frame_w: int, frame_h: int, size: int):
+        # YOLOv8 export shape: (1, 4 + num_classes, num_boxes)
         output = output[0]
         if output.shape[0] < output.shape[1]:
             output = output.transpose()
@@ -391,6 +430,21 @@ class VisionNavNode(Node):
             x, y, w, h = boxes[int(index)]
             detections.append((class_ids[int(index)], confidences[int(index)], x, y, w, h))
         return detections
+
+    def init_yolo_dnn_fallback(self) -> None:
+        import os
+
+        model_path = str(self.get_parameter("yolo_model_path").value)
+        if not os.path.exists(model_path):
+            self.publish_event("yolo onnx fallback unavailable: {0} not found".format(model_path))
+            return
+        try:
+            self.yolo_net = self.cv2.dnn.readNetFromONNX(model_path)
+            backend = self.select_yolo_backend()
+            self.publish_event("yolo model loaded: {0} ({1})".format(model_path, backend))
+        except Exception as exc:
+            self.yolo_net = None
+            self.publish_event("yolo onnx fallback load failed: {0}".format(exc))
 
     def run_yolo_inference(self, frame, size: int):
         blob = self.cv2.dnn.blobFromImage(frame, 1.0 / 255.0, (size, size), swapRB=True, crop=False)
