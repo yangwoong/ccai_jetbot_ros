@@ -39,8 +39,8 @@ nohup ./scripts/host_csi_mjpeg_server.py \
   --capture-width "${CCAI_CSI_CAPTURE_WIDTH:-816}" \
   --capture-height "${CCAI_CSI_CAPTURE_HEIGHT:-616}" \
   --fps "${CCAI_CSI_FPS:-30}" \
-  --width "${CCAI_CAMERA_WIDTH:-320}" \
-  --height "${CCAI_CAMERA_HEIGHT:-240}" \
+  --width "${CCAI_CAMERA_WIDTH:-224}" \
+  --height "${CCAI_CAMERA_HEIGHT:-224}" \
   --flip-method "${CCAI_CSI_FLIP_METHOD:-0}" \
   --jpeg-quality "${CCAI_CAMERA_JPEG_QUALITY:-45}" \
   --backend "${CCAI_CSI_HOST_BACKEND:-auto}" \

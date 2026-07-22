@@ -91,8 +91,16 @@ CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=url ./scripts/host_docke
 호스트 JetBot 공개 코드 경로만 강제하려면:
 
 ```bash
-CCAI_CSI_HOST_BACKEND=jetbot ./scripts/host_csi_mjpeg_start.sh
+cd ~
+[ -d jetbot ] || git clone http://github.com/NVIDIA-AI-IOT/jetbot.git
+
+cd /home/roboat/work/ros2_ws/ccai_jetbot_ros
+./scripts/host_csi_mjpeg_stop.sh
+JETBOT_REPO_PATH=$HOME/jetbot CCAI_CSI_HOST_BACKEND=jetbot CCAI_CAMERA_WIDTH=224 CCAI_CAMERA_HEIGHT=224 ./scripts/host_csi_mjpeg_start.sh
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=url CCAI_CAMERA_WIDTH=224 CCAI_CAMERA_HEIGHT=224 ./scripts/host_docker_run.sh
 ```
+
+Jupyter Notebook에서 `Camera.instance(...)`가 이미 실행 중이면 Argus camera session을 점유하고 있을 수 있습니다. MJPEG 서버 또는 ROS 카메라 노드를 켜기 전에 노트북 커널에서 `camera.stop()`을 실행하거나 커널을 중지하세요. CSI 카메라는 동시에 여러 프로세스가 안정적으로 잡는 구성이 아닙니다.
 
 이 명령에서 Jetson이 재부팅되면 ROS 코드 문제가 아니라 Jetson CSI/Argus/전원/커널 쪽 문제일 가능성이 큽니다. 재부팅 후 아래 로그를 수집합니다.
 

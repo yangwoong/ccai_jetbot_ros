@@ -40,6 +40,24 @@ def camera_parameters():
     retry_seconds = os.environ.get("CCAI_CAMERA_RETRY_SECONDS")
     if retry_seconds:
         params["capture_retry_seconds"] = float(retry_seconds)
+    capture_width = os.environ.get("CCAI_CAMERA_CAPTURE_WIDTH")
+    if capture_width:
+        params["capture_width"] = int(capture_width)
+    capture_height = os.environ.get("CCAI_CAMERA_CAPTURE_HEIGHT")
+    if capture_height:
+        params["capture_height"] = int(capture_height)
+    width = os.environ.get("CCAI_CAMERA_WIDTH")
+    if width:
+        params["width"] = int(width)
+    height = os.environ.get("CCAI_CAMERA_HEIGHT")
+    if height:
+        params["height"] = int(height)
+    fps = os.environ.get("CCAI_CAMERA_FPS")
+    if fps:
+        params["fps"] = float(fps)
+    jpeg_quality = os.environ.get("CCAI_CAMERA_JPEG_QUALITY")
+    if jpeg_quality:
+        params["jpeg_quality"] = int(jpeg_quality)
     csi_sensor_id = os.environ.get("CCAI_CSI_SENSOR_ID")
     if csi_sensor_id:
         params["csi_sensor_id"] = int(csi_sensor_id)
