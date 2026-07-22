@@ -64,6 +64,14 @@ cd /home/roboat/work/ros2_ws/ccai_jetbot_ros
 ./scripts/host_docker_update.sh
 ```
 
+기본 업데이트는 apt 설치를 건너뛰고 Python/ROS 워크스페이스 빌드만 수행합니다. 컨테이너에 OS 패키지가 처음부터 없을 때만 다음처럼 실행합니다.
+
+```bash
+INSTALL_OS_DEPS=1 ./scripts/host_docker_update.sh
+```
+
+JetPack 4.x 또는 Ubuntu 18.04 기반 컨테이너에서 ROS apt 저장소 키가 만료되어 `EXPKEYSIG F42ED6FBAB17C654`가 발생하면, 우선 `INSTALL_OS_DEPS` 없이 업데이트하세요. 이미 `colcon`, `opencv`, `PIL`이 설치되어 있으면 apt가 필요 없습니다.
+
 이 스크립트가 수행하는 일:
 
 1. 호스트 저장소에서 `git fetch origin`

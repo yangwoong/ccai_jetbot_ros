@@ -26,7 +26,10 @@ if ! docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
 fi
 
 echo "[container] rebuilding workspace"
-docker exec "${CONTAINER_NAME}" bash -c "cd '${WORKDIR}' && ./scripts/container_build.sh"
+docker exec \
+  -e INSTALL_OS_DEPS="${INSTALL_OS_DEPS:-0}" \
+  "${CONTAINER_NAME}" \
+  bash -c "cd '${WORKDIR}' && ./scripts/container_build.sh"
 
 echo "[host] restarting container"
 docker restart "${CONTAINER_NAME}" >/dev/null
