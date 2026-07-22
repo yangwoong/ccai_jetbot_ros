@@ -24,6 +24,12 @@ cd /home/roboat/work/ros2_ws/ccai_jetbot_ros
 CCAI_SAFE_START=1 ./scripts/host_docker_run.sh
 ```
 
+`host_docker_run.sh`는 기본적으로 컨테이너 시작 전에 워크스페이스를 다시 빌드합니다. 이미 빌드된 설치본을 그대로 쓰려면 다음처럼 실행합니다.
+
+```bash
+FORCE_BUILD_ON_RUN=0 ./scripts/host_docker_run.sh
+```
+
 안전 모드에서 재부팅이 멈추면 장치를 하나씩 켭니다.
 
 ```bash
@@ -86,6 +92,8 @@ CONTAINER_NAME=jetbot-patrol IMAGE=my-ros-humble:latest ./scripts/host_docker_ru
 ```text
 http://JETSON_IP:8080
 ```
+
+컨테이너에 `fastapi`/`uvicorn`이 없어도 웹채팅은 Python 표준 라이브러리 fallback 서버로 동작합니다.
 
 JetBot 하드웨어와 카메라 설정은 `docs/hardware_jetbot.md`를 먼저 확인하세요.
 

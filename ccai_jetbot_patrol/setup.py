@@ -13,7 +13,7 @@ setup(
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
         (f"share/{package_name}/config", glob("config/*.yaml")),
     ],
-    install_requires=["setuptools", "requests", "pyyaml", "fastapi", "uvicorn"],
+    install_requires=["setuptools", "requests", "pyyaml"],
     zip_safe=True,
     maintainer="CCAI JetBot Team",
     maintainer_email="admin@example.com",

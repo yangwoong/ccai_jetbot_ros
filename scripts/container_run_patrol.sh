@@ -25,7 +25,9 @@ else
   exit 1
 fi
 
-if [ ! -f install/setup.bash ]; then
+FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN:-1}"
+
+if [ "${FORCE_BUILD_ON_RUN}" = "1" ] || [ ! -f install/setup.bash ]; then
   ./scripts/container_build.sh
 fi
 

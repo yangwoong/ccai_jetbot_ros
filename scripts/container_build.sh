@@ -34,9 +34,7 @@ if [ "${INSTALL_OS_DEPS}" = "1" ]; then
     i2c-tools
 fi
 
-python3 - <<'PY' || python3 -m pip install fastapi uvicorn requests pyyaml
-import fastapi
-import uvicorn
+python3 - <<'PY' || python3 -m pip install requests pyyaml
 import requests
 import yaml
 PY

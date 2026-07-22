@@ -2,6 +2,8 @@ import json
 import asyncio
 import threading
 from collections import deque
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 import rclpy
 from rclpy.node import Node
@@ -73,7 +75,8 @@ class WebChatNode(Node):
 
     def build_app(self):
         if FastAPI is None:
-            raise RuntimeError("fastapi and uvicorn are required: pip install fastapi uvicorn")
+            self.get_logger().warning("fastapi/uvicorn unavailable; using stdlib HTTP server fallback")
+            return None
 
         app = FastAPI(title="CCAI JetBot Patrol")
 
@@ -124,6 +127,9 @@ class WebChatNode(Node):
     def start_server(self) -> None:
         host = str(self.get_parameter("host").value)
         port = int(self.get_parameter("port").value)
+        if self.app is None:
+            self.start_stdlib_server(host, port)
+            return
 
         def run() -> None:
             loop = asyncio.new_event_loop()
@@ -131,6 +137,74 @@ class WebChatNode(Node):
             uvicorn.run(self.app, host=host, port=port, log_level="warning")
 
         threading.Thread(target=run, daemon=True).start()
+
+    def start_stdlib_server(self, host: str, port: int) -> None:
+        node = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                return
+
+            def do_GET(self):
+                if self.path == "/" or self.path.startswith("/?"):
+                    self.send_bytes(HTML_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                elif self.path.startswith("/api/status"):
+                    self.send_json(node.status_payload())
+                elif self.path.startswith("/api/camera.jpg"):
+                    self.send_bytes(node.latest_camera_frame or EMPTY_JPEG, "image/jpeg")
+                else:
+                    self.send_error(404)
+
+            def do_POST(self):
+                if not self.path.startswith("/api/chat"):
+                    self.send_error(404)
+                    return
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = self.rfile.read(length)
+                try:
+                    payload = json.loads(body.decode("utf-8"))
+                    message = str(payload.get("message", ""))
+                except Exception:
+                    message = ""
+                if message:
+                    node.messages.append({"source": "admin", "message": message})
+                    node.admin_text_pub.publish(String(data=message))
+                self.send_json({"accepted": bool(message)})
+
+            def send_json(self, payload):
+                self.send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
+
+            def send_bytes(self, body: bytes, content_type: str):
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+
+        class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+            daemon_threads = True
+
+        def run() -> None:
+            server = ThreadingHTTPServer((host, port), Handler)
+            server.serve_forever()
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def status_payload(self):
+        return {
+            "status": self.safe_json(self.latest_status),
+            "llm_status": self.safe_json(self.latest_llm_status),
+            "vision_status": self.safe_json(self.latest_vision_status),
+            "camera_status": self.safe_json(self.latest_camera_status),
+            "messages": list(self.messages),
+        }
+
+    def safe_json(self, text: str):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {"raw": text}
 
 
 HTML_PAGE = """
