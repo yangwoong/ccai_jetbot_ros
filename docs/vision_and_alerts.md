@@ -12,19 +12,23 @@
 
 ### 모델 준비
 
-YOLO 모델(ONNX)이 없으면 `vision_nav_node`는 자동으로 예전 방식(엣지 밀도 기반 장애물 회피 + HOG 사람 검출)으로만 동작합니다. YOLO를 쓰려면 최초 1회 모델을 받습니다.
+YOLO 모델(ONNX)이 없으면 `vision_nav_node`는 자동으로 예전 방식(엣지 밀도 기반 장애물 회피 + HOG 사람 검출)으로만 동작합니다. Ultralytics는 `.onnx`를 직접 배포하지 않고 `.pt` 가중치만 배포하므로, `scripts/download_yolo_model.sh`는 `ultralytics` 파이썬 패키지로 `yolov8n.pt`를 받아 그 자리에서 ONNX로 변환합니다. 이 패키지는 Python 3.8 이상이 필요해서 Jetson 호스트의 Python 3.6에서는 바로 실행되지 않습니다.
 
 ```bash
+# Mac/PC/H200처럼 Python 3.8+가 있는 곳에서 실행
 ./scripts/download_yolo_model.sh
+
+# 결과 파일을 Jetson 저장소로 복사
+scp data/models/yolov8n.onnx roboat@JETSON_IP:/home/roboat/work/ros2_ws/ccai_jetbot_ros/data/models/yolov8n.onnx
 ```
 
-기본값은 Ultralytics의 `yolov8n.onnx`(COCO 80종 클래스, 약 12MB)를 `data/models/yolov8n.onnx`에 받습니다. 다른 모델/경로를 쓰려면:
+Jetson에서 그냥 실행하면 Python 버전을 감지해서 위 안내를 그대로 출력하고 종료합니다. 이미 어딘가에 호스팅해 둔 `.onnx`가 있다면 다음처럼 바로 받을 수도 있습니다.
 
 ```bash
-CCAI_YOLO_MODEL_URL=https://... CCAI_YOLO_MODEL_PATH=data/models/custom.onnx ./scripts/download_yolo_model.sh
+CCAI_YOLO_MODEL_URL=https://your-mirror/yolov8n.onnx ./scripts/download_yolo_model.sh
 ```
 
-그리고 `robot.yaml`의 `vision_nav_node.yolo_model_path`를 맞춰줍니다. 모델을 받은 뒤에는 컨테이너를 재시작해야 로드됩니다.
+기본 파일명은 `data/models/yolov8n.onnx`(COCO 80종 클래스, 약 12MB)입니다. 다른 모델을 쓰려면 `CCAI_YOLO_MODEL_NAME`(예: `yolov8s`), `CCAI_YOLO_IMG_SIZE`를 지정하고 `robot.yaml`의 `vision_nav_node.yolo_model_path`를 맞춰줍니다. 모델을 받은 뒤에는 컨테이너를 재시작해야 로드됩니다.
 
 ```bash
 docker restart ccai-jetbot
