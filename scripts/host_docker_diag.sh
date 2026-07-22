@@ -17,6 +17,10 @@ echo "I2C devices:"
 ls -l /dev/i2c* 2>/dev/null || true
 echo "Video devices:"
 ls -l /dev/video* 2>/dev/null || true
+echo "Argus socket:"
+ls -ld /tmp/argus_socket 2>/dev/null || echo "/tmp/argus_socket not mounted"
+echo "Last invalid camera frame:"
+ls -l /tmp/ccai_camera_last_invalid.jpg 2>/dev/null || echo "no invalid-frame capture"
 if command -v v4l2-ctl >/dev/null 2>&1; then
   echo "v4l2 formats:"
   v4l2-ctl --device=/dev/video0 --list-formats-ext 2>/dev/null || true

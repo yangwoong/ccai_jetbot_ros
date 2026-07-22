@@ -1,3 +1,5 @@
+import json
+import os
 import time
 
 import rclpy
@@ -12,7 +14,7 @@ class CameraNode(Node):
         self.declare_parameter("enabled", True)
         self.declare_parameter("camera_index", 0)
         self.declare_parameter("camera_backend", "auto")
-        self.declare_parameter("use_gstreamer", False)
+        self.declare_parameter("use_gstreamer", True)
         self.declare_parameter("force_v4l2", True)
         self.declare_parameter("capture_width", 640)
         self.declare_parameter("capture_height", 480)
@@ -21,10 +23,12 @@ class CameraNode(Node):
         self.declare_parameter("fps", 5.0)
         self.declare_parameter("jpeg_quality", 45)
         self.declare_parameter("reopen_after_failures", 5)
+        self.declare_parameter("capture_retry_seconds", 3.0)
         self.declare_parameter("open_probe_frames", 8)
         self.declare_parameter("reject_invalid_frames", True)
         self.declare_parameter("invalid_green_ratio", 0.85)
         self.declare_parameter("invalid_min_stddev", 8.0)
+        self.declare_parameter("debug_frame_path", "/tmp/ccai_camera_last_invalid.jpg")
         self.declare_parameter("output_topic", "/image_raw/compressed")
 
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
@@ -36,6 +40,7 @@ class CameraNode(Node):
         self.backend_index = 0
         self.active_backend = "none"
         self.last_error = ""
+        self.last_open_attempt = 0.0
 
         if bool(self.get_parameter("enabled").value):
             self.open_camera_candidates()
@@ -64,8 +69,27 @@ class CameraNode(Node):
             pipeline = (
                 "nvarguscamerasrc ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 "
                 "! nvvidconv flip-method=0 ! video/x-raw, width={0}, height={1}, format=BGRx "
-                "! videoconvert ! video/x-raw, format=BGR ! appsink"
+                "! videoconvert ! video/x-raw, format=BGR ! appsink drop=true max-buffers=1 sync=false"
             ).format(capture_width, capture_height)
+            self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
+        elif backend == "csi_gstreamer_legacy":
+            pipeline = (
+                "nvarguscamerasrc sensor-id={0} ! video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 "
+                "! nvvidconv ! video/x-raw, format=BGRx ! videoconvert "
+                "! video/x-raw, width={1}, height={2}, format=BGR ! appsink drop=true max-buffers=1 sync=false"
+            ).format(index, capture_width, capture_height)
+            self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
+        elif backend == "gst_v4l2_any":
+            pipeline = (
+                "v4l2src device=/dev/video{0} ! videoconvert "
+                "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
+            ).format(index)
+            self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
+        elif backend == "gst_v4l2_mjpg_any":
+            pipeline = (
+                "v4l2src device=/dev/video{0} ! image/jpeg ! jpegdec ! videoconvert "
+                "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
+            ).format(index)
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_mjpg":
             pipeline = (
@@ -109,7 +133,8 @@ class CameraNode(Node):
         self.publish_status()
 
     def open_camera_candidates(self) -> None:
-        for _ in range(6):
+        self.last_open_attempt = time.monotonic()
+        for _ in range(len(self.backend_candidates())):
             self.open_camera()
             if self.capture is not None:
                 return
@@ -121,15 +146,31 @@ class CameraNode(Node):
         self.capture.set(self.cv2.CAP_PROP_BUFFERSIZE, 1)
 
     def next_backend(self) -> str:
-        backend = str(self.get_parameter("camera_backend").value)
-        if backend != "auto":
-            return backend
-        candidates = ["v4l2_mjpg", "gst_v4l2_mjpg", "v4l2_yuyv", "gst_v4l2_yuyv", "v4l2_default", "default"]
-        if bool(self.get_parameter("use_gstreamer").value):
-            candidates.append("csi_gstreamer")
+        candidates = self.backend_candidates()
         selected = candidates[self.backend_index % len(candidates)]
         self.backend_index += 1
         return selected
+
+    def backend_candidates(self):
+        backend = str(self.get_parameter("camera_backend").value)
+        if backend != "auto":
+            return [backend]
+
+        candidates = []
+        if bool(self.get_parameter("use_gstreamer").value) or os.path.exists("/tmp/argus_socket"):
+            candidates.extend(["csi_gstreamer", "csi_gstreamer_legacy"])
+
+        candidates.extend([
+            "gst_v4l2_any",
+            "gst_v4l2_mjpg_any",
+            "v4l2_mjpg",
+            "gst_v4l2_mjpg",
+            "v4l2_yuyv",
+            "gst_v4l2_yuyv",
+            "v4l2_default",
+            "default",
+        ])
+        return candidates
 
     def probe_capture(self) -> bool:
         probe_frames = max(int(self.get_parameter("open_probe_frames").value), 1)
@@ -142,11 +183,17 @@ class CameraNode(Node):
                     return True
             time.sleep(0.05)
         if last_frame is not None:
-            self.last_error = self.describe_invalid_frame(self.resize_output(last_frame))
+            resized = self.resize_output(last_frame)
+            self.last_error = self.describe_invalid_frame(resized)
+            self.save_debug_frame(resized)
         return False
 
     def capture_once(self) -> None:
         if self.cv2 is None or self.capture is None:
+            retry_seconds = float(self.get_parameter("capture_retry_seconds").value)
+            if time.monotonic() - self.last_open_attempt >= retry_seconds:
+                self.publish_event_throttled("camera not open, retrying")
+                self.open_camera_candidates()
             return
         ok, frame = self.capture.read()
         if not ok or frame is None:
@@ -164,6 +211,7 @@ class CameraNode(Node):
         if bool(self.get_parameter("reject_invalid_frames").value) and self.is_invalid_frame(frame):
             self.failed_reads += 1
             self.last_error = self.describe_invalid_frame(frame)
+            self.save_debug_frame(frame)
             self.publish_event_throttled("camera invalid frame rejected")
             if self.failed_reads >= int(self.get_parameter("reopen_after_failures").value):
                 self.reopen_camera()
@@ -205,6 +253,15 @@ class CameraNode(Node):
         height = int(self.get_parameter("height").value)
         return self.cv2.resize(frame, (width, height))
 
+    def save_debug_frame(self, frame) -> None:
+        path = str(self.get_parameter("debug_frame_path").value)
+        if not path:
+            return
+        try:
+            self.cv2.imwrite(path, frame)
+        except Exception as exc:
+            self.get_logger().debug("failed to write camera debug frame: {0}".format(exc))
+
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
@@ -224,12 +281,13 @@ class CameraNode(Node):
         self.open_camera_candidates()
 
     def publish_status(self) -> None:
-        payload = '{{"backend":"{0}","failed_reads":{1},"last_error":"{2}"}}'.format(
-            self.active_backend,
-            self.failed_reads,
-            self.last_error.replace('"', "'"),
-        )
-        self.status_pub.publish(String(data=payload))
+        payload = {
+            "backend": self.active_backend,
+            "failed_reads": self.failed_reads,
+            "last_error": self.last_error,
+            "retry_seconds": float(self.get_parameter("capture_retry_seconds").value),
+        }
+        self.status_pub.publish(String(data=json.dumps(payload)))
 
     def destroy_node(self) -> bool:
         if self.capture is not None:

@@ -35,7 +35,7 @@ camera_node:
     enabled: true
     camera_index: 0
     camera_backend: "auto"
-    use_gstreamer: false
+    use_gstreamer: true
     force_v4l2: true
     capture_width: 640
     capture_height: 480
@@ -44,10 +44,12 @@ camera_node:
     fps: 5.0
     jpeg_quality: 45
     reopen_after_failures: 5
+    capture_retry_seconds: 3.0
     open_probe_frames: 8
     reject_invalid_frames: true
     invalid_green_ratio: 0.85
     invalid_min_stddev: 8.0
+    debug_frame_path: "/tmp/ccai_camera_last_invalid.jpg"
     output_topic: "/image_raw/compressed"
 
 vision_nav_node:
