@@ -24,7 +24,11 @@ fi
 CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL:-1}"
 CCAI_ENABLE_LLM="${CCAI_ENABLE_LLM:-1}"
 CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB:-1}"
-CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-1}"
+if [ "${CCAI_SAFE_START}" = "1" ]; then
+  CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-0}"
+else
+  CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM:-1}"
+fi
 CCAI_ENABLE_OTA="${CCAI_ENABLE_OTA:-1}"
 FORCE_BUILD_ON_RUN="${FORCE_BUILD_ON_RUN:-1}"
 CCAI_CAMERA_DEVICE="${CCAI_CAMERA_DEVICE:-}"
@@ -63,10 +67,10 @@ if [ "${DOCKER_RUNTIME_NVIDIA}" = "1" ]; then
   DOCKER_ARGS+=(--runtime nvidia)
 fi
 
-if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ] && [ "${CCAI_ARGUS_MOUNT_MODE}" = "tmp" ]; then
+if [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_ARGUS_MOUNT_MODE}" = "tmp" ]; then
   DOCKER_ARGS+=(--ipc host)
   DOCKER_ARGS+=(-v /tmp:/tmp)
-elif [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_CAMERA_MODE}" = "csi" ] && [ -e /tmp/argus_socket ]; then
+elif [ "${CCAI_ENABLE_CAMERA}" = "1" ] && [ "${CCAI_ARGUS_MOUNT_MODE}" = "socket" ] && [ -e /tmp/argus_socket ]; then
   DOCKER_ARGS+=(-v /tmp/argus_socket:/tmp/argus_socket)
 fi
 

@@ -21,12 +21,21 @@ ls -l /dev/video* 2>/dev/null || true
 
 if ! docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
   echo "container ${CONTAINER_NAME} is not running" >&2
+  echo "start probe container with:"
+  echo "  CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 CCAI_ARGUS_MOUNT_MODE=tmp ./scripts/host_docker_run.sh" >&2
+  exit 1
+fi
+
+if ! docker exec "${CONTAINER_NAME}" test -S /tmp/argus_socket; then
+  echo "container ${CONTAINER_NAME} cannot see /tmp/argus_socket" >&2
+  echo "restart it for CSI probing with:"
+  echo "  CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 CCAI_ARGUS_MOUNT_MODE=tmp ./scripts/host_docker_run.sh" >&2
   exit 1
 fi
 
 echo
 echo "[container] OpenCV CSI probe: JetBot pipeline"
-docker exec \
+docker exec -i \
   -e PIPELINE="${PIPELINE}" \
   -e PIPELINE_WITH_ID="${PIPELINE_WITH_ID}" \
   "${CONTAINER_NAME}" \

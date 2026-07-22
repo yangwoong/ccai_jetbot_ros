@@ -14,7 +14,7 @@ ls -l /dev/video* 2>/dev/null || true
 
 echo
 echo "[container] OpenCV probe: ${CAMERA_DEVICE}"
-docker exec \
+docker exec -i \
   -e CAMERA_DEVICE="${CAMERA_DEVICE}" \
   "${CONTAINER_NAME}" \
   python3 - <<'PY'

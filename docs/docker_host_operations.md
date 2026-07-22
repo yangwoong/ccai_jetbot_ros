@@ -70,7 +70,7 @@ CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docke
 CSI 센서는 NVIDIA JetBot 기본 파이프라인인 `sensor-mode=3`, `816x616`, `NV12`, `30fps`를 먼저 시도합니다. ROS 카메라 노드와 별개로 CSI만 확인하려면:
 
 ```bash
-CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled ./scripts/host_docker_run.sh
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 CCAI_ARGUS_MOUNT_MODE=tmp ./scripts/host_docker_run.sh
 ./scripts/host_csi_probe.sh
 ```
 

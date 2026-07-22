@@ -149,7 +149,7 @@ JetBot 공개 코드와 동일하게 open probe 단계에서는 첫 프레임이
 CSI만 직접 확인:
 
 ```bash
-CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled ./scripts/host_docker_run.sh
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=disabled DOCKER_RUNTIME_NVIDIA=1 CCAI_ARGUS_MOUNT_MODE=tmp ./scripts/host_docker_run.sh
 ./scripts/host_csi_probe.sh
 ```
 

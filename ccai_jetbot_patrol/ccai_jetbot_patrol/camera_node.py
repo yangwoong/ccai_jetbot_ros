@@ -49,6 +49,7 @@ class CameraNode(Node):
         self.failed_reads = 0
         self.backend_index = 0
         self.active_backend = "none"
+        self.active_pipeline = ""
         self.last_error = ""
         self.last_open_attempt = 0.0
         self.open_attempt_rounds = 0
@@ -80,9 +81,11 @@ class CameraNode(Node):
         self.active_backend = backend
         if backend == "csi_jetbot":
             pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True, jetbot_exact=True)
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_jetcam":
             pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False, jetbot_exact=True)
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_gstreamer":
             pipeline = (
@@ -96,43 +99,52 @@ class CameraNode(Node):
                 int(self.get_parameter("width").value),
                 int(self.get_parameter("height").value),
             )
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_any":
             pipeline = (
                 "v4l2src device={0} ! videoconvert "
                 "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
             ).format(source)
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_mjpg_any":
             pipeline = (
                 "v4l2src device={0} ! image/jpeg ! jpegdec ! videoconvert "
                 "! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
             ).format(source)
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_mjpg":
             pipeline = (
                 "v4l2src device={0} ! image/jpeg,width={1},height={2},framerate={3}/1 "
                 "! jpegdec ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
             ).format(source, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "gst_v4l2_yuyv":
             pipeline = (
                 "v4l2src device={0} ! video/x-raw,format=YUY2,width={1},height={2},framerate={3}/1 "
                 "! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false"
             ).format(source, capture_width, capture_height, int(max(float(self.get_parameter("fps").value), 1.0)))
+            self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "v4l2_mjpg":
+            self.active_pipeline = ""
             self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc("M", "J", "P", "G"))
             self.configure_capture(capture_width, capture_height)
         elif backend == "v4l2_yuyv":
+            self.active_pipeline = ""
             self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.capture.set(self.cv2.CAP_PROP_FOURCC, self.cv2.VideoWriter_fourcc("Y", "U", "Y", "V"))
             self.configure_capture(capture_width, capture_height)
         elif backend == "v4l2_default":
+            self.active_pipeline = ""
             self.capture = self.cv2.VideoCapture(source, self.cv2.CAP_V4L2)
             self.configure_capture(capture_width, capture_height)
         else:
+            self.active_pipeline = ""
             self.capture = self.cv2.VideoCapture(source)
             self.configure_capture(capture_width, capture_height)
 
@@ -325,6 +337,7 @@ class CameraNode(Node):
             "mode": str(self.get_parameter("camera_mode").value),
             "device": self.camera_source(),
             "backend": self.active_backend,
+            "pipeline": self.active_pipeline,
             "csi_sensor_id": int(self.get_parameter("csi_sensor_id").value),
             "csi_sensor_mode": int(self.get_parameter("csi_sensor_mode").value),
             "failed_reads": self.failed_reads,
