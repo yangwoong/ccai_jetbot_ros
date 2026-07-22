@@ -27,10 +27,13 @@ CCAI_SAFE_START=1 ./scripts/host_docker_run.sh
 안전 모드에서 재부팅이 멈추면 장치를 하나씩 켭니다.
 
 ```bash
-# 1단계: USB 카메라만 추가
+# 1단계: 카메라 노드만 올리고 실제 장치는 열지 않음
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 ./scripts/host_docker_run.sh
 
-# CSI 카메라만 추가
+# USB 카메라 장치 열기
+CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=usb ./scripts/host_docker_run.sh
+
+# CSI 카메라 장치 열기
 CCAI_SAFE_START=1 CCAI_ENABLE_CAMERA=1 CCAI_CAMERA_MODE=csi ./scripts/host_docker_run.sh
 
 # 2단계: 카메라 + 비전
