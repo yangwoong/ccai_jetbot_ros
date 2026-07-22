@@ -20,8 +20,9 @@ Allowed command types:
 - patrol_stop: stop robot motion and patrol
 - go_home: return to home or charging station
 - inspect: inspect a named target. Include target.
+- follow_person: follow the requested person using the robot camera
 - say: if no robot action is requested. Include text.
-JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|say","target":"","text":""}
+JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|say","target":"","text":""}
 """
 
 

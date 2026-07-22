@@ -1,11 +1,13 @@
 patrol_node:
   ros__parameters:
-    linear_speed: 0.12
-    angular_speed: 0.35
+    linear_speed: 0.04
+    angular_speed: 0.16
     heartbeat_seconds: 2.0
     safe_stop_on_idle: true
     patrol_forward_seconds: 4.0
     patrol_turn_seconds: 1.2
+    use_vision_cmd_vel: true
+    vision_command_timeout_seconds: 0.8
 
 jetbot_hardware_node:
   ros__parameters:
@@ -16,8 +18,9 @@ jetbot_hardware_node:
     motor_i2c_address: 0
     left_motor_channel: 1
     right_motor_channel: 2
-    max_linear_speed: 0.25
-    max_angular_speed: 1.2
+    max_linear_speed: 0.5
+    max_angular_speed: 2.0
+    motor_output_scale: 0.35
     left_trim: 1.0
     right_trim: 1.0
     command_timeout_seconds: 1.0
@@ -38,7 +41,24 @@ camera_node:
     fps: 5.0
     jpeg_quality: 45
     reopen_after_failures: 5
+    reject_invalid_frames: true
+    invalid_green_ratio: 0.85
+    invalid_min_stddev: 8.0
     output_topic: "/image_raw/compressed"
+
+vision_nav_node:
+  ros__parameters:
+    enabled: true
+    image_topic: "/image_raw/compressed"
+    linear_speed: 0.045
+    turn_speed: 0.16
+    follow_linear_speed: 0.04
+    max_angular_speed: 0.22
+    obstacle_stop_edge_density: 0.16
+    min_valid_frame_seconds: 1.0
+    person_detect_every_n_frames: 5
+    follow_target_area: 0.18
+    follow_min_area: 0.035
 
 vlm_client_node:
   ros__parameters:

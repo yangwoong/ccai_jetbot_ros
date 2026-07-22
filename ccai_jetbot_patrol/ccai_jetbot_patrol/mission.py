@@ -37,6 +37,8 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="patrol_stop", raw=message)
     if lowered in {"go home", "return home", "home", "복귀", "기지로", "충전소로"}:
         return MissionCommand(type="go_home", raw=message)
+    if lowered in {"follow person", "person follow", "follow me", "사람 따라가", "따라와", "나를 따라와"}:
+        return MissionCommand(type="follow_person", target="person", raw=message)
     if lowered.startswith("inspect "):
         return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], raw=message)
     if lowered.startswith("점검 "):
@@ -47,6 +49,8 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="patrol_stop", raw=message)
     if "복귀" in lowered or "충전소" in lowered:
         return MissionCommand(type="go_home", raw=message)
+    if "따라" in lowered and ("사람" in lowered or "나" in lowered or "대상" in lowered):
+        return MissionCommand(type="follow_person", target=raw, raw=message)
     if "점검" in lowered:
         target = raw.split("점검", 1)[0].strip()
         target = target.replace("를", "").replace("을", "").strip()
@@ -67,6 +71,10 @@ def normalize_command_type(command_type: str) -> str:
         "stop_patrol": "patrol_stop",
         "return_home": "go_home",
         "home": "go_home",
+        "follow": "follow_person",
+        "follow_me": "follow_person",
+        "follow_person": "follow_person",
+        "person_follow": "follow_person",
         "report": "status",
         "state": "status",
     }
@@ -74,7 +82,7 @@ def normalize_command_type(command_type: str) -> str:
 
 
 def is_direct_robot_command(command: MissionCommand) -> bool:
-    return command.type in {"status", "patrol_start", "patrol_stop", "go_home", "inspect"}
+    return command.type in {"status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person"}
 
 
 def command_to_json(command: MissionCommand) -> str:

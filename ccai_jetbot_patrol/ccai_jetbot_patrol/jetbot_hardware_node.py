@@ -19,14 +19,15 @@ class MotorBackend:
 
 
 class JetBotMotorBackend(MotorBackend):
-    def __init__(self) -> None:
+    def __init__(self, scale: float) -> None:
         from jetbot import Robot
 
         self.robot = Robot()
+        self.scale = scale
 
     def set_motors(self, left: float, right: float) -> None:
-        self.robot.left_motor.value = left
-        self.robot.right_motor.value = right
+        self.robot.left_motor.value = clamp(left * self.scale, -1.0, 1.0)
+        self.robot.right_motor.value = clamp(right * self.scale, -1.0, 1.0)
 
 
 class RawI2cBus:
@@ -116,10 +117,11 @@ class Pca9685MotorBackend(MotorBackend):
         4: (7, 5, 6),
     }
 
-    def __init__(self, bus: int, address: int, left_motor: int, right_motor: int, logger) -> None:
+    def __init__(self, bus: int, address: int, left_motor: int, right_motor: int, scale: float, logger) -> None:
         self.driver = Pca9685(bus, address)
         self.left_channels = self.MOTOR_CHANNELS[left_motor]
         self.right_channels = self.MOTOR_CHANNELS[right_motor]
+        self.scale = scale
         self.logger = logger
         self.logger.info(
             "pca9685 motor backend ready, bus={0}, address=0x{1:02x}, left_motor={2}, right_motor={3}".format(
@@ -133,7 +135,7 @@ class Pca9685MotorBackend(MotorBackend):
 
     def set_motor(self, channels, speed: float) -> None:
         pwm_channel, in1_channel, in2_channel = channels
-        speed = clamp(speed, -1.0, 1.0)
+        speed = clamp(speed * self.scale, -1.0, 1.0)
         duty = int(abs(speed) * 4095)
         if speed > 0:
             self.driver.set_pin(in1_channel, True)
@@ -355,8 +357,9 @@ class JetBotHardwareNode(Node):
         self.declare_parameter("motor_i2c_address", 0)
         self.declare_parameter("left_motor_channel", 1)
         self.declare_parameter("right_motor_channel", 2)
-        self.declare_parameter("max_linear_speed", 0.25)
-        self.declare_parameter("max_angular_speed", 1.2)
+        self.declare_parameter("max_linear_speed", 0.5)
+        self.declare_parameter("max_angular_speed", 2.0)
+        self.declare_parameter("motor_output_scale", 0.35)
         self.declare_parameter("left_trim", 1.0)
         self.declare_parameter("right_trim", 1.0)
         self.declare_parameter("command_timeout_seconds", 1.0)
@@ -397,7 +400,7 @@ class JetBotHardwareNode(Node):
         backend = str(self.get_parameter("motor_backend").value)
         if backend in {"auto", "jetbot"}:
             try:
-                motor = JetBotMotorBackend()
+                motor = JetBotMotorBackend(float(self.get_parameter("motor_output_scale").value))
                 self.get_logger().info("jetbot motor backend ready")
                 return motor
             except Exception as exc:
@@ -413,6 +416,7 @@ class JetBotHardwareNode(Node):
                             address,
                             int(self.get_parameter("left_motor_channel").value),
                             int(self.get_parameter("right_motor_channel").value),
+                            float(self.get_parameter("motor_output_scale").value),
                             self.get_logger(),
                         )
                     except Exception as exc:

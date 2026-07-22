@@ -13,6 +13,7 @@ from ccai_jetbot_patrol.mission import parse_mission_command
 class PatrolState(str, Enum):
     IDLE = "idle"
     PATROLLING = "patrolling"
+    FOLLOWING_PERSON = "following_person"
     INSPECTING = "inspecting"
     RETURNING_HOME = "returning_home"
     STOPPED = "stopped"
@@ -27,10 +28,15 @@ class PatrolNode(Node):
         self.declare_parameter("safe_stop_on_idle", True)
         self.declare_parameter("patrol_forward_seconds", 4.0)
         self.declare_parameter("patrol_turn_seconds", 1.2)
+        self.declare_parameter("use_vision_cmd_vel", True)
+        self.declare_parameter("vision_command_timeout_seconds", 0.8)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
         self.last_vlm_summary = ""
+        self.last_vision_status = ""
+        self.last_vision_cmd = Twist()
+        self.last_vision_cmd_at = 0.0
         self.state_changed_at = time.monotonic()
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -38,6 +44,8 @@ class PatrolNode(Node):
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.create_subscription(String, "/ccai/mission_command", self.on_mission_command, 10)
         self.create_subscription(String, "/ccai/vlm_observation", self.on_vlm_observation, 10)
+        self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
+        self.create_subscription(Twist, "/ccai/vision_cmd_vel", self.on_vision_cmd_vel, 10)
 
         heartbeat = float(self.get_parameter("heartbeat_seconds").value)
         self.create_timer(heartbeat, self.publish_status)
@@ -64,6 +72,10 @@ class PatrolNode(Node):
             self.set_state(PatrolState.INSPECTING)
             self.current_target = command.target
             self.publish_event(f"inspecting {command.target}")
+        elif command.type == "follow_person":
+            self.set_state(PatrolState.FOLLOWING_PERSON)
+            self.current_target = command.target or "person"
+            self.publish_event("following person: {0}".format(self.current_target))
         elif command.type == "status":
             self.publish_status()
             self.publish_event(self.status_text())
@@ -77,10 +89,25 @@ class PatrolNode(Node):
         if self.state == PatrolState.PATROLLING and any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"]):
             self.publish_event(f"attention required: {msg.data[:180]}")
 
+    def on_vision_status(self, msg: String) -> None:
+        self.last_vision_status = msg.data
+
+    def on_vision_cmd_vel(self, msg: Twist) -> None:
+        self.last_vision_cmd = msg
+        self.last_vision_cmd_at = time.monotonic()
+
     def drive_loop(self) -> None:
         twist = Twist()
         linear_speed = float(self.get_parameter("linear_speed").value)
         angular_speed = float(self.get_parameter("angular_speed").value)
+
+        if self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON} and self.use_recent_vision_cmd():
+            self.cmd_vel_pub.publish(self.last_vision_cmd)
+            return
+
+        if self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON} and bool(self.get_parameter("use_vision_cmd_vel").value):
+            self.stop_motion()
+            return
 
         if self.state == PatrolState.PATROLLING:
             elapsed = time.monotonic() - self.state_changed_at
@@ -103,6 +130,12 @@ class PatrolNode(Node):
 
         self.cmd_vel_pub.publish(twist)
 
+    def use_recent_vision_cmd(self) -> bool:
+        if not bool(self.get_parameter("use_vision_cmd_vel").value):
+            return False
+        timeout = float(self.get_parameter("vision_command_timeout_seconds").value)
+        return self.last_vision_cmd_at > 0.0 and time.monotonic() - self.last_vision_cmd_at <= timeout
+
     def stop_motion(self) -> None:
         self.cmd_vel_pub.publish(Twist())
 
@@ -117,6 +150,7 @@ class PatrolNode(Node):
             "state": self.state.value,
             "target": self.current_target,
             "last_vlm_summary": self.last_vlm_summary,
+            "last_vision_status": self.last_vision_status,
             "patrol_elapsed_seconds": round(time.monotonic() - self.state_changed_at, 1),
         }
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
@@ -125,7 +159,7 @@ class PatrolNode(Node):
         return "status: state={0}, target={1}, last_vlm={2}".format(
             self.state.value,
             self.current_target or "none",
-            (self.last_vlm_summary or "none")[:120],
+            (self.last_vision_status or self.last_vlm_summary or "none")[:120],
         )
 
     def publish_event(self, text: str) -> None:

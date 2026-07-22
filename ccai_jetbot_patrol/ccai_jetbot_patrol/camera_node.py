@@ -18,6 +18,9 @@ class CameraNode(Node):
         self.declare_parameter("fps", 5.0)
         self.declare_parameter("jpeg_quality", 45)
         self.declare_parameter("reopen_after_failures", 5)
+        self.declare_parameter("reject_invalid_frames", True)
+        self.declare_parameter("invalid_green_ratio", 0.85)
+        self.declare_parameter("invalid_min_stddev", 8.0)
         self.declare_parameter("output_topic", "/image_raw/compressed")
 
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
@@ -81,11 +84,18 @@ class CameraNode(Node):
             if self.failed_reads >= int(self.get_parameter("reopen_after_failures").value):
                 self.reopen_camera()
             return
-        self.failed_reads = 0
 
         width = int(self.get_parameter("width").value)
         height = int(self.get_parameter("height").value)
         frame = self.cv2.resize(frame, (width, height))
+        if bool(self.get_parameter("reject_invalid_frames").value) and self.is_invalid_frame(frame):
+            self.failed_reads += 1
+            self.publish_event_throttled("camera invalid frame rejected")
+            if self.failed_reads >= int(self.get_parameter("reopen_after_failures").value):
+                self.reopen_camera()
+            return
+        self.failed_reads = 0
+
         quality = int(self.get_parameter("jpeg_quality").value)
         ok, encoded = self.cv2.imencode(".jpg", frame, [int(self.cv2.IMWRITE_JPEG_QUALITY), quality])
         if not ok:
@@ -97,6 +107,15 @@ class CameraNode(Node):
         msg.format = "jpeg"
         msg.data = encoded.tobytes()
         self.publisher.publish(msg)
+
+    def is_invalid_frame(self, frame) -> bool:
+        stddev = float(frame.std())
+        if stddev < float(self.get_parameter("invalid_min_stddev").value):
+            return True
+        hsv = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2HSV)
+        green_mask = self.cv2.inRange(hsv, (45, 60, 40), (85, 255, 255))
+        green_ratio = float(green_mask.mean()) / 255.0
+        return green_ratio > float(self.get_parameter("invalid_green_ratio").value)
 
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
