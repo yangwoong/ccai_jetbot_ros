@@ -13,7 +13,7 @@ export VLLM_API_KEY="CHANGE_ME_LONG_RANDOM_KEY"
 export PORT=8000
 export TENSOR_PARALLEL_SIZE=1
 
-./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-32B-Instruct
+./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-70B-Instruct
 ```
 
 직접 실행할 때는 다음과 같습니다.
@@ -22,7 +22,7 @@ export TENSOR_PARALLEL_SIZE=1
 python3 -m vllm.entrypoints.openai.api_server \
   --host 0.0.0.0 \
   --port 8000 \
-  --model Qwen/Qwen3-VL-32B-Instruct \
+  --model Qwen/Qwen3-VL-70B-Instruct \
   --trust-remote-code \
   --limit-mm-per-prompt image=1 \
   --api-key "CHANGE_ME_LONG_RANDOM_KEY"
@@ -68,7 +68,7 @@ cp .env.example .env
 ```bash
 CCAI_VLLM_API_BASE_URL=http://H200_IP:8000/v1
 CCAI_VLLM_API_KEY=CHANGE_ME_LONG_RANDOM_KEY
-CCAI_VLLM_MODEL=Qwen/Qwen3-VL-32B-Instruct
+CCAI_VLLM_MODEL=Qwen/Qwen3-VL-70B-Instruct
 CCAI_TELEGRAM_BOT_TOKEN=123456789:TELEGRAM_BOT_TOKEN
 CCAI_TELEGRAM_ALLOWED_CHAT_ID=123456789
 CCAI_OTA_MANIFEST_URL=

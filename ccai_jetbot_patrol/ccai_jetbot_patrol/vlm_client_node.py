@@ -26,7 +26,7 @@ class VlmClientNode(Node):
         super().__init__("vlm_client_node")
         self.declare_parameter("api_base_url", os.getenv("CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1"))
         self.declare_parameter("api_key", os.getenv("CCAI_VLLM_API_KEY", ""))
-        self.declare_parameter("model", os.getenv("CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"))
+        self.declare_parameter("model", os.getenv("CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct"))
         self.declare_parameter("image_topic", "/image_raw/compressed")
         self.declare_parameter("trigger_topic", "/ccai/vlm_trigger")
         self.declare_parameter("prompt", DEFAULT_PROMPT)
@@ -88,7 +88,7 @@ class VlmClientNode(Node):
     def call_vlm(self, image_bytes: bytes, image_format: str) -> str:
         api_base_url = self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
         api_key = self.param_or_env("api_key", "CCAI_VLLM_API_KEY", "")
-        model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
+        model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct")
         prompt = str(self.get_parameter("prompt").value)
         timeout = float(self.get_parameter("request_timeout_seconds").value)
 

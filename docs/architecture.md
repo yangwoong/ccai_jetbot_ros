@@ -11,7 +11,7 @@ flowchart LR
   Camera --> VLM[vlm_client_node]
   Vision --> Patrol
   Vision -- obstacle trigger --> VLM
-  VLM --> H200[H200 vLLM Qwen3-VL-32B]
+  VLM --> H200[H200 vLLM Qwen3-VL-70B]
   H200 --> VLM
   VLM --> Patrol
   Patrol --> Base[/cmd_vel JetBot base]
@@ -36,8 +36,8 @@ flowchart LR
 
 ## Roadmap
 
-- Nav2 연동: 현재 `patrol_node`는 기본 속도 제어 상태 머신입니다. 실제 맵 기반 순찰은 Nav2 `NavigateToPose` 액션 클라이언트로 확장합니다.
-- JetBot 모터 드라이버: Waveshare JetBot ROS2 드라이버 또는 `/cmd_vel` 호환 브리지 연결이 필요합니다.
+핵심 목표(장애물 회피 → 지역 탐색/LLM 라벨링 → 내비게이션 지도 → 임무 할당 → 이상 감지)와 단계별 구현 상태, 다음 작업 순서는 [Navigation Roadmap](navigation_roadmap.md)에 정리되어 있습니다. 그 외 항목:
+
 - 안전: 범퍼, 초음파, depth camera, e-stop 토픽을 추가해 `patrol_node`가 즉시 정지하도록 확장합니다.
 - OTA: 운영 전 manifest 서명 검증과 명령 allowlist를 추가해야 합니다.
 

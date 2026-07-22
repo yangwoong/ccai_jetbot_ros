@@ -37,7 +37,7 @@ class LlmControlNode(Node):
         super().__init__("llm_control_node")
         self.declare_parameter("api_base_url", os.getenv("CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1"))
         self.declare_parameter("api_key", os.getenv("CCAI_VLLM_API_KEY", ""))
-        self.declare_parameter("model", os.getenv("CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"))
+        self.declare_parameter("model", os.getenv("CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct"))
         self.declare_parameter("request_timeout_seconds", 20.0)
         self.declare_parameter("health_check_seconds", 30.0)
 
@@ -50,7 +50,7 @@ class LlmControlNode(Node):
         self.last_status = {
             "connected": False,
             "api_base_url": self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1"),
-            "model": self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct"),
+            "model": self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct"),
             "message": "not checked",
             "checked_at": 0.0,
         }
@@ -96,7 +96,7 @@ class LlmControlNode(Node):
     def call_text_llm(self, text: str) -> str:
         api_base_url = self.param_or_env("api_base_url", "CCAI_VLLM_API_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
         api_key = self.param_or_env("api_key", "CCAI_VLLM_API_KEY", "")
-        model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-32B-Instruct")
+        model = self.param_or_env("model", "CCAI_VLLM_MODEL", "Qwen/Qwen3-VL-70B-Instruct")
         timeout = float(self.get_parameter("request_timeout_seconds").value)
         payload = {
             "model": model,

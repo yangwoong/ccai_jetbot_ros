@@ -1,6 +1,6 @@
 # CCAI JetBot ROS Patrol
 
-ROS2 Humble 기반 자율순찰 로봇 프로젝트입니다. Jetson Nano Dev Kit 4GB + Waveshare JetBot AI Kit에서 순찰/임무 수행을 담당하고, H200 서버의 vLLM OpenAI 호환 API로 Qwen3-VL-32B 시각 추론을 호출합니다. 관리자는 웹 채팅, 텔레그램, ROS 로그/토픽으로 로봇과 소통합니다.
+ROS2 Humble 기반 자율순찰 로봇 프로젝트입니다. Jetson Nano Dev Kit 4GB + Waveshare JetBot AI Kit에서 순찰/임무 수행을 담당하고, H200 서버의 vLLM OpenAI 호환 API로 Qwen3-VL-70B 시각 추론을 호출합니다. 관리자는 웹 채팅, 텔레그램, ROS 로그/토픽으로 로봇과 소통합니다.
 
 ## 중요한 환경 전제
 
@@ -47,7 +47,7 @@ http://JETSON_IP:8080
 ## H200 vLLM 예시
 
 ```bash
-./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-32B-Instruct
+./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-70B-Instruct
 ```
 
 Jetson의 `config/robot.yaml`에서 다음 값을 H200 주소로 설정합니다.
@@ -56,7 +56,7 @@ Jetson의 `config/robot.yaml`에서 다음 값을 H200 주소로 설정합니다
 vlm_client:
   ros__parameters:
     api_base_url: "http://H200_IP:8000/v1"
-    model: "Qwen/Qwen3-VL-32B-Instruct"
+    model: "Qwen/Qwen3-VL-70B-Instruct"
 ```
 
 또는 systemd/.env 환경변수로 `CCAI_VLLM_API_BASE_URL`, `CCAI_VLLM_API_KEY`, `CCAI_VLLM_MODEL`, `CCAI_TELEGRAM_BOT_TOKEN`, `CCAI_TELEGRAM_ALLOWED_CHAT_ID`, `CCAI_OTA_MANIFEST_URL`을 지정할 수 있습니다.
@@ -64,6 +64,7 @@ vlm_client:
 도커 외부 웹 채팅, 텔레그램, H200 API 키 설정은 [Connectivity Guide](docs/connectivity.md)를 참고하세요.
 도커에 진입하지 않는 호스트 실행/업데이트 방법은 [Docker Host Operations](docs/docker_host_operations.md)를 참고하세요.
 YOLO 기반 자율 주행/따라가기와 VLM 위험 알림(텔레그램/웹채팅) 설정은 [Vision and Alerts](docs/vision_and_alerts.md)를 참고하세요.
+프로젝트의 핵심 목표(지역 인지 순찰: 장애물 회피 → 지역 탐색/라벨링 → 내비게이션 지도 → 임무 할당 → 이상 감지)와 개발 우선순위는 [Navigation Roadmap](docs/navigation_roadmap.md)에 정리되어 있습니다.
 
 ## 관리자 명령 예시
 

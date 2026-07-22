@@ -22,7 +22,7 @@ journalctl -u ccai-jetbot.service -f
 H200 서버에서는 CUDA, PyTorch, vLLM 설치 후 다음을 실행합니다.
 
 ```bash
-PORT=8000 TENSOR_PARALLEL_SIZE=1 ./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-32B-Instruct
+PORT=8000 TENSOR_PARALLEL_SIZE=1 ./scripts/start_h200_vllm.sh Qwen/Qwen3-VL-70B-Instruct
 ```
 
 상태 확인:
