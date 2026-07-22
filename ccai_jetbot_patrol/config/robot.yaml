@@ -58,7 +58,7 @@ camera_node:
     csi_flip_method: 0
     width: 320
     height: 240
-    fps: 5.0
+    fps: 10.0
     jpeg_quality: 45
     reopen_after_failures: 5
     capture_retry_seconds: 3.0

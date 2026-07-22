@@ -264,7 +264,7 @@ document.getElementById('form').addEventListener('submit', async (event) => {
   refresh();
 });
 setInterval(refresh, 1000);
-setInterval(refreshCamera, 500);
+setInterval(refreshCamera, 150);
 refresh();
 refreshCamera();
 </script>

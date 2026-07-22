@@ -16,7 +16,7 @@ def build_pipeline(args):
         "format=(string)NV12, framerate=(fraction){fps}/1 ! "
         "nvvidconv flip-method={flip_method} ! "
         "video/x-raw, width=(int){width}, height=(int){height}, format=(string)BGRx ! "
-        "videoconvert ! video/x-raw, format=(string)BGR ! appsink"
+        "videoconvert ! video/x-raw, format=(string)BGR ! appsink drop=true max-buffers=1 sync=false"
     ).format(
         sensor_mode=args.sensor_mode,
         capture_width=args.capture_width,

@@ -8,7 +8,25 @@
 
 이제는 `vision_nav_node`가 실제로 한 번이라도 명령을 보낸 뒤에 끊긴 경우에만(카메라/비전 유실에 대한 안전 정지) 정지시키고, 애초에 비전 명령을 받은 적이 없으면 `patrol_node`의 기본 전진/회전 패턴으로 주행합니다. [patrol_node.py](../ccai_jetbot_patrol/ccai_jetbot_patrol/patrol_node.py)의 `drive_loop`를 참고하세요.
 
-## 2. YOLO 기반 자율 주행 / 따라가기
+## 2. 카메라 영상이 몇 초 지연되던 문제 (수정됨)
+
+카메라 앞을 손으로 가려도 웹채팅 프리뷰에 몇 초 뒤에나 반영되는 문제가 있었습니다. 원인은 `camera_node.py`의 CSI GStreamer 파이프라인이었습니다.
+
+`csi_jetbot`/`csi_jetcam` 백엔드(실제로 열리는 백엔드, 로그의 `backend=csi_jetbot`)는 파이프라인 끝에 옵션 없는 맨 `appsink`를 썼습니다. GStreamer의 `appsink`는 기본적으로 들어오는 프레임을 큐에 쌓는데, CSI 센서는 `csi_fps`(기본 30fps)로 계속 프레임을 만드는 반면 `camera_node`는 `fps`(기존 기본 5fps) 주기로만 큐에서 하나씩 꺼내 갔습니다. 즉 꺼내가는 속도보다 쌓이는 속도가 훨씬 빨라서 큐에 오래된 프레임이 계속 쌓였고, `.read()`는 그 오래된 프레임부터 순서대로 반환했습니다 — 시간이 지날수록 지연이 계속 늘어나는 구조적 버그였고, 그게 "손을 가려도 몇 초 뒤에 나타나는" 증상이었습니다.
+
+`appsink drop=true max-buffers=1 sync=false` 옵션을 모든 CSI 백엔드에 통일해서, 큐에 최신 프레임 1개만 남기고 오래된 프레임은 버리도록 고쳤습니다. 이제 지연은 프레임 주기 수준(수십~백여 ms)으로 유지됩니다. 호스트 MJPEG 브리지(`scripts/host_csi_mjpeg_server.py`)의 파이프라인도 같은 문제가 있어서 함께 고쳤습니다.
+
+추가로 반응 속도를 높이기 위해 `camera_node`의 기본 `fps`를 5 → 10으로, 웹채팅 프리뷰의 폴링 주기를 500ms → 150ms로 올렸습니다. 순찰/장애물 회피는 새 프레임이 도착할 때마다 다시 계산되므로, 프레임이 자주 올수록 그만큼 빨리 반응합니다.
+
+```yaml
+camera_node:
+  ros__parameters:
+    fps: 10.0   # 기존 5.0
+```
+
+Jetson Nano급 하드웨어에서 320x240 JPEG 인코딩은 10fps에서도 가벼우므로 CPU 부하 걱정은 크지 않지만, 다른 부하(YOLO CPU 폴백 등)가 겹치면 `fps`를 다시 낮추는 것도 고려하세요.
+
+## 3. YOLO 기반 자율 주행 / 따라가기
 
 ### 모델 준비
 
@@ -127,7 +145,7 @@ curl -X POST http://127.0.0.1:8080/api/chat \
 
 YOLO 모델이 없으면 target이 사람인 경우에만 기존 HOG 검출기로 계속 동작하고, 그 외 물체 지정은 무시되고 "찾는 중" 상태로 회전만 합니다.
 
-## 3. 카메라 분석 알림 (VLM → 텔레그램/웹채팅)
+## 4. 카메라 분석 알림 (VLM → 텔레그램/웹채팅)
 
 `vlm_client_node`는 카메라 프레임을 H200 vLLM(Qwen3-VL)에 보내 분석합니다.
 
@@ -154,7 +172,7 @@ ros2 topic echo /ccai/vlm_observation
 ros2 topic echo /ccai/events
 ```
 
-## 4. 자연어 이동/속도/분석 명령
+## 5. 자연어 이동/속도/분석 명령
 
 웹채팅/텔레그램에서 순찰 시작 없이도 자연어로 개별 동작을 시킬 수 있습니다. `mission.py`의 직접 명령 매칭(빠른 경로)과 LLM 라우팅(그 외 표현) 둘 다로 처리됩니다.
 
@@ -182,7 +200,7 @@ min_speed_scale: 0.3
 max_speed_scale: 2.0
 ```
 
-## 5. 텔레그램 알림 동작 확인
+## 6. 텔레그램 알림 동작 확인
 
 `telegram_bridge_node`는 `/ccai/events`로 들어오는 모든 이벤트(카메라/모터/순찰/VLM 등)를 등록된 `allowed_chat_id`로 그대로 전달합니다. 이게 실제로 동작하는지 순찰 이벤트가 나기 전에 바로 확인할 수 있도록, **컨테이너(텔레그램 브리지 노드)가 시작될 때마다** 아래 메시지를 자동으로 한 번 보냅니다.
 
@@ -208,7 +226,7 @@ docker logs --since 5m ccai-jetbot | grep -i telegram
 
 `telegram send skipped: bot_token not set` / `telegram startup notice skipped: ...` / `telegram send failed: HTTP 4xx ...` 중 하나가 보이면 그게 원인입니다. 특히 HTTP 401/403이면 봇 토큰이 틀렸거나, 관리자가 텔레그램에서 그 봇에게 먼저 아무 메시지나(`/start` 등) 보낸 적이 없는 경우가 많습니다(`docs/connectivity.md`의 chat_id 확인 절차 참고).
 
-## 6. CSI 카메라 호스트 설정 자동 복구
+## 7. CSI 카메라 호스트 설정 자동 복구
 
 `nvargus-daemon`의 `enableCamInfiniteTimeout=1` 문제(자세한 내용은 `docs/hardware_jetbot.md`)는 호스트 systemd 설정이라 git으로 관리되지 않고, 재플래시/패키지 업데이트/알 수 없는 이유로 다시 나타날 수 있습니다. 이제 이 수정을 스크립트로 자동화했습니다.
 

@@ -113,11 +113,11 @@ class CameraNode(Node):
         backend = self.next_backend()
         self.active_backend = backend
         if backend == "csi_jetbot":
-            pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True, jetbot_exact=True)
+            pipeline = self.csi_pipeline(include_sensor_id=False, include_sensor_mode=True)
             self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_jetcam":
-            pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False, jetbot_exact=True)
+            pipeline = self.csi_pipeline(include_sensor_id=True, include_sensor_mode=False)
             self.active_pipeline = pipeline
             self.capture = self.cv2.VideoCapture(pipeline, self.cv2.CAP_GSTREAMER)
         elif backend == "csi_gstreamer":
@@ -403,13 +403,19 @@ class CameraNode(Node):
             return device
         return "/dev/video{0}".format(int(self.get_parameter("camera_index").value))
 
-    def csi_pipeline(self, include_sensor_id: bool, include_sensor_mode: bool, jetbot_exact: bool = False) -> str:
+    def csi_pipeline(self, include_sensor_id: bool, include_sensor_mode: bool) -> str:
         source = "nvarguscamerasrc"
         if include_sensor_id:
             source += " sensor-id={0}".format(int(self.get_parameter("csi_sensor_id").value))
         if include_sensor_mode:
             source += " sensor-mode={0}".format(int(self.get_parameter("csi_sensor_mode").value))
-        appsink = "appsink" if jetbot_exact else "appsink drop=true max-buffers=1 sync=false"
+        # A bare "appsink" (no drop/max-buffers/sync=false) queues every frame the
+        # sensor produces. csi_fps captures at 30fps while this node only drains
+        # one frame every 1/fps seconds (5fps by default), so the queue backs up
+        # and .read() returns older and older frames - a multi-second, ever-growing
+        # lag between what the camera sees and what gets delivered. Always drop
+        # stale frames and keep only the latest one.
+        appsink = "appsink drop=true max-buffers=1 sync=false"
         return (
             "{0} ! video/x-raw(memory:NVMM), width={1}, height={2}, format=(string)NV12, framerate=(fraction){3}/1 "
             "! nvvidconv flip-method={4} ! video/x-raw, width=(int){5}, height=(int){6}, format=(string)BGRx "
