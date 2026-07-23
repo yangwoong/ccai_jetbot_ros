@@ -156,11 +156,23 @@ class PatrolNode(Node):
         if not label:
             self.publish_event("save failed: no location name given")
             return
-        if not self.recording or not self.record_buffer:
-            self.publish_event("no recorded moves to save; say '기억 시작' first and move around")
-            return
-        self.location_store.set(label, self.record_buffer)
-        self.publish_event(f"location saved: {label} ({len(self.record_buffer)} steps)")
+        if self.recording and self.record_buffer:
+            self.location_store.set(label, self.record_buffer)
+            self.publish_event(f"location saved: {label} ({len(self.record_buffer)} steps, with return path)")
+        else:
+            # No '기억 시작' -> move -> save sequence was done, so there's no
+            # replayable path to this spot - but the admin is standing here right
+            # now saying "remember this place", and we can still remember what it
+            # looks like from here via visual features alone (see the capture
+            # request below). This is what makes a plain "여기는 작은방이야, 저장해"
+            # (with no prior recording) actually save something instead of
+            # silently failing with "no recorded moves to save".
+            if not self.location_store.has(label):
+                self.location_store.set(label, [])
+            self.publish_event(
+                f"location saved: {label} (현재 위치의 시각 특징만 기억됨, 이동 경로 없음 - "
+                "경로도 저장하려면 '기억 시작' 후 이동하고 다시 저장하세요)"
+            )
         self.recording = False
         self.record_buffer = []
         # Capture visual features of the current view too, so future arrivals at
@@ -328,9 +340,9 @@ class PatrolNode(Node):
             elif self.manual_kind == "move_backward":
                 twist.linear.x = -linear_speed * self.ramp_factor(manual_elapsed)
             elif self.manual_kind == "turn_left":
-                twist.angular.z = -angular_speed
-            elif self.manual_kind == "turn_right":
                 twist.angular.z = angular_speed
+            elif self.manual_kind == "turn_right":
+                twist.angular.z = -angular_speed
         elif self.state == PatrolState.MANUAL_DRIVE:
             # No auto-timeout: "앞으로 가" / "천천히 앞으로 가" / keyboard-held turns keep
             # driving until an explicit stop/new direction command, per how an admin
@@ -343,9 +355,9 @@ class PatrolNode(Node):
                     speed *= float(self.get_parameter("manual_drive_slow_factor").value)
                 twist.linear.x = speed if self.manual_kind == "move_forward" else -speed
             elif self.manual_kind == "turn_left":
-                twist.angular.z = -angular_speed
-            elif self.manual_kind == "turn_right":
                 twist.angular.z = angular_speed
+            elif self.manual_kind == "turn_right":
+                twist.angular.z = -angular_speed
         elif self.state == PatrolState.REPLAYING:
             if self.replay_index >= len(self.replay_steps):
                 self.stop_motion()
@@ -372,9 +384,9 @@ class PatrolNode(Node):
             elif kind == "move_backward":
                 twist.linear.x = -linear_speed * self.ramp_factor(step_elapsed)
             elif kind == "turn_left":
-                twist.angular.z = -angular_speed
-            elif kind == "turn_right":
                 twist.angular.z = angular_speed
+            elif kind == "turn_right":
+                twist.angular.z = -angular_speed
         elif bool(self.get_parameter("safe_stop_on_idle").value):
             self.stop_motion()
             return

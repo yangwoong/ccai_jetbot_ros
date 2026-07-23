@@ -33,7 +33,7 @@ Allowed command types:
 - set_speed: change driving speed. Include target as "up" or "down".
 - analyze: analyze the current camera view right now and report back
 - remember_start: begin recording the path driven from here so it can be saved as a named location
-- remember_save: save the path recorded since remember_start under a name. Include target as the location name (e.g. "정문").
+- remember_save: save the current location under a name, whether or not remember_start was used first (if the user just says "here is X, remember/save it" with no prior recording, that's still remember_save - it will save the current view's visual features even without a travel path). Include target as the location name mentioned by the user (e.g. "정문", "작은방").
 - say: if no robot action is requested. Include text.
 JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|say","target":"","text":""}
 """

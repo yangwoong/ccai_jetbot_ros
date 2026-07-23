@@ -66,22 +66,32 @@ class VlmClientNode(Node):
         due = now - self.last_request_at >= float(self.get_parameter("min_interval_seconds").value)
         if self.inflight or not (due or self.triggered):
             return
+        was_triggered = self.triggered
         self.last_request_at = now
         self.inflight = True
         self.triggered = False
         question = self.pending_question
         self.pending_question = ""
         image_bytes = bytes(msg.data)
-        threading.Thread(target=self.analyze_image, args=(image_bytes, msg.format, question), daemon=True).start()
+        threading.Thread(
+            target=self.analyze_image, args=(image_bytes, msg.format, question, was_triggered), daemon=True
+        ).start()
 
-    def analyze_image(self, image_bytes: bytes, image_format: str, question: str = "") -> None:
+    def analyze_image(self, image_bytes: bytes, image_format: str, question: str = "", was_triggered: bool = False) -> None:
         try:
             content = self.call_vlm(image_bytes, image_format, question)
             observation = self.parse_observation(content, question)
             self.observation_pub.publish(String(data=json.dumps(observation, ensure_ascii=False)))
         except Exception as exc:
             self.get_logger().warning(f"vlm request failed: {exc}")
-            self.report_error_throttled(f"vlm request failed: {exc}")
+            if was_triggered:
+                # An explicit on-demand request ("영상 분석해", location inspection)
+                # deserves an immediate answer even if it's "it failed" - silently
+                # eating this behind the ambient periodic-scan throttle previously
+                # made it look like the command was ignored entirely.
+                self.event_pub.publish(String(data=f"vlm analysis failed: {exc}"))
+            else:
+                self.report_error_throttled(f"vlm request failed: {exc}")
         finally:
             self.inflight = False
 

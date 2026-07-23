@@ -209,14 +209,24 @@ class VisionNavNode(Node):
         self.last_valid_frame_at = time.monotonic()
         self.last_frame = frame
         self.frame_count += 1
+
+        # Obstacle signals (and the debug overlay built from them) used to only be
+        # computed while actually driving forward, so the "analysis" preview in the
+        # web UI would freeze on a stale frame/reading any time the robot was idle,
+        # manually turning, or between patrol legs - visibly out of sync with the
+        # live camera preview next to it. Now every valid frame is analyzed and
+        # published, whether or not it's currently steering anything.
+        signals = self.analyze_obstacle(frame)
         if drives_forward:
-            twist, detail = self.compute_patrol_command(frame)
+            twist, detail = self.compute_patrol_command(frame, signals)
             self.cmd_pub.publish(twist)
             self.publish_status("patrol", detail=detail)
-        elif self.mode == "following_person":
-            twist, detail = self.compute_follow_command(frame)
-            self.cmd_pub.publish(twist)
-            self.publish_status("follow_person", detail=detail)
+        else:
+            self.publish_debug_frame(frame, signals["obstacle_now"], self.describe_obstacle(signals, suffix=" (not driving)"))
+            if self.mode == "following_person":
+                twist, detail = self.compute_follow_command(frame)
+                self.cmd_pub.publish(twist)
+                self.publish_status("follow_person", detail=detail)
 
     def decode_frame(self, data) -> object:
         arr = self.np.frombuffer(bytes(data), dtype=self.np.uint8)
@@ -229,7 +239,14 @@ class VisionNavNode(Node):
         green_mask = self.cv2.inRange(hsv, (45, 60, 40), (85, 255, 255))
         return float(green_mask.mean()) / 255.0 > 0.85
 
-    def compute_patrol_command(self, frame):
+    def analyze_obstacle(self, frame) -> dict:
+        """Compute every obstacle-detection signal for this frame exactly once, so
+        the always-on debug overlay and the actual driving decision (when driving)
+        see the identical numbers for the identical frame - previously each caller
+        recomputed these independently, and the debug overlay was skipped entirely
+        outside of drives_forward, which is what made the debug pane visibly lag
+        behind the live camera preview.
+        """
         height, width = frame.shape[:2]
         bottom = frame[int(height * 0.52) : height, :]
         gray = self.cv2.cvtColor(bottom, self.cv2.COLOR_BGR2GRAY)
@@ -243,11 +260,7 @@ class VisionNavNode(Node):
         obstacle_density = self.region_density(edges[int(edges.shape[0] * 0.55) :, third : 2 * third])
         self.last_edge_obstacle_density = obstacle_density
 
-        twist = Twist()
         stop_threshold = float(self.get_parameter("obstacle_stop_edge_density").value)
-        turn_speed = float(self.get_parameter("turn_speed").value)
-        now = time.monotonic()
-
         # Edge density alone misses plain/low-texture obstacles: a smooth object
         # (a wall, a box, a leg, anything low-contrast) produces few Canny edges
         # and can read as "clear floor" right up until impact. These two checks
@@ -258,6 +271,39 @@ class VisionNavNode(Node):
         sudden_change = self.detect_sudden_bottom_change(frame)
         yolo_obstacle = self.detect_path_obstacle(frame)
         obstacle_now = yolo_obstacle is not None or obstacle_density > stop_threshold or color_obstacle or sudden_change
+
+        return {
+            "left_density": left_density,
+            "center_density": center_density,
+            "right_density": right_density,
+            "obstacle_density": obstacle_density,
+            "color_obstacle": color_obstacle,
+            "sudden_change": sudden_change,
+            "yolo_obstacle": yolo_obstacle,
+            "obstacle_now": obstacle_now,
+        }
+
+    def describe_obstacle(self, signals: dict, suffix: str = "") -> str:
+        yolo_obstacle = signals["yolo_obstacle"]
+        if yolo_obstacle is not None:
+            return "yolo obstacle: {0} area={1:.3f}{2}".format(yolo_obstacle[0], yolo_obstacle[1], suffix)
+        return "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}, color={3}, sudden={4}{5}".format(
+            signals["obstacle_density"], signals["left_density"], signals["right_density"],
+            signals["color_obstacle"], signals["sudden_change"], suffix,
+        )
+
+    def compute_patrol_command(self, frame, signals: dict):
+        left_density = signals["left_density"]
+        center_density = signals["center_density"]
+        right_density = signals["right_density"]
+        color_obstacle = signals["color_obstacle"]
+        sudden_change = signals["sudden_change"]
+        yolo_obstacle = signals["yolo_obstacle"]
+        obstacle_now = signals["obstacle_now"]
+
+        twist = Twist()
+        turn_speed = float(self.get_parameter("turn_speed").value)
+        now = time.monotonic()
 
         # Real footage showed the robot flapping rapidly left/right instead of making
         # one clean escape turn. Cause: turn direction was re-decided from
@@ -323,7 +369,7 @@ class VisionNavNode(Node):
                 )
             else:
                 detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}, color={3}, sudden={4}, dir={5:+d}".format(
-                    obstacle_density, left_density, right_density, color_obstacle, sudden_change, self.obstacle_avoidance_direction
+                    signals["obstacle_density"], left_density, right_density, color_obstacle, sudden_change, self.obstacle_avoidance_direction
                 )
             self.maybe_trigger_vlm(detail)
             self.forward_streak_started_at = 0.0
@@ -457,6 +503,12 @@ class VisionNavNode(Node):
                 self.last_edge_obstacle_density, self.last_color_distance, self.last_bottom_change
             )
             self.cv2.putText(debug, metrics, (5, height - 8), self.cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+            # A visible timestamp + frame counter lets an admin directly confirm the
+            # debug overlay is tracking the live camera in real time rather than
+            # trusting it by eye - this is what actually made the earlier "preview
+            # and analysis frame look different" report possible to check.
+            stamp = "frame #{0} @ {1:.3f}".format(self.frame_count, time.time())
+            self.cv2.putText(debug, stamp, (5, 30), self.cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 0), 1)
 
             ok, encoded = self.cv2.imencode(".jpg", debug, [int(self.cv2.IMWRITE_JPEG_QUALITY), 60])
             if ok:
