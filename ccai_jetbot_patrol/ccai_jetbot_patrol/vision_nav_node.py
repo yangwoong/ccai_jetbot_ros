@@ -66,6 +66,10 @@ class VisionNavNode(Node):
         self.declare_parameter("speed_ramp_min_factor", 0.35)
         self.declare_parameter("camera_alert_min_interval_seconds", 10.0)
         self.declare_parameter("debug_image_enabled", True)
+        self.declare_parameter("obstacle_avoidance_hold_seconds", 1.0)
+        self.declare_parameter("obstacle_clear_confirm_frames", 5)
+        self.declare_parameter("steer_direction_noise_floor", 0.01)
+        self.declare_parameter("steer_smoothing_alpha", 0.4)
 
         self.cv2 = None
         self.np = None
@@ -86,6 +90,10 @@ class VisionNavNode(Node):
         self.last_color_distance = 0.0
         self.last_bottom_change = 0.0
         self.last_edge_obstacle_density = 0.0
+        self.obstacle_avoidance_direction = 0
+        self.obstacle_avoidance_until = 0.0
+        self.obstacle_clear_streak = 0
+        self.smoothed_steer = 0.0
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
@@ -182,6 +190,10 @@ class VisionNavNode(Node):
         if frame is None or self.is_invalid_frame(frame):
             self.publish_status("invalid_camera", stop=True)
             self.publish_stop()
+            # A blurred/invalid frame (e.g. from a fast turn) shouldn't be able to
+            # snap straight back to full speed the instant a good frame reappears -
+            # ramp up slowly again, same as after an obstacle turn.
+            self.forward_streak_started_at = 0.0
             if drives_forward or self.mode == "following_person":
                 self.publish_event_throttled("camera view is invalid, stopping motion", key="camera")
             return
@@ -225,6 +237,7 @@ class VisionNavNode(Node):
         twist = Twist()
         stop_threshold = float(self.get_parameter("obstacle_stop_edge_density").value)
         turn_speed = float(self.get_parameter("turn_speed").value)
+        now = time.monotonic()
 
         # Edge density alone misses plain/low-texture obstacles: a smooth object
         # (a wall, a box, a leg, anything low-contrast) produces few Canny edges
@@ -234,38 +247,78 @@ class VisionNavNode(Node):
         # / right under me now", which plain/smooth obstacles still trigger.
         color_obstacle = self.detect_floor_color_obstacle(frame)
         sudden_change = self.detect_sudden_bottom_change(frame)
-
         yolo_obstacle = self.detect_path_obstacle(frame)
-        if yolo_obstacle is not None:
-            twist.angular.z = -turn_speed if left_density < right_density else turn_speed
-            detail = "yolo obstacle: {0} area={1:.3f}".format(yolo_obstacle[0], yolo_obstacle[1])
+        obstacle_now = yolo_obstacle is not None or obstacle_density > stop_threshold or color_obstacle or sudden_change
+
+        # Real footage showed the robot flapping rapidly left/right instead of making
+        # one clean escape turn. Cause: turn direction was re-decided from
+        # left_density vs right_density on *every single frame*, and during motion
+        # blur (fast turns, or a close obstacle filling the frame) both densities
+        # collapse toward zero - at that point the comparison is deciding on pure
+        # noise, and it can flip every 100ms. Now direction is chosen once per
+        # avoidance episode and held for obstacle_avoidance_hold_seconds regardless
+        # of what later noisy frames say.
+        hold_seconds = float(self.get_parameter("obstacle_avoidance_hold_seconds").value)
+        confirm_frames = max(int(self.get_parameter("obstacle_clear_confirm_frames").value), 1)
+
+        if obstacle_now:
+            self.obstacle_clear_streak = 0
+            if self.obstacle_avoidance_direction == 0 or now >= self.obstacle_avoidance_until:
+                noise_floor = float(self.get_parameter("steer_direction_noise_floor").value)
+                if abs(left_density - right_density) < noise_floor:
+                    # Densities too close to call (often exactly when blur/proximity
+                    # makes them meaningless) - keep whatever direction was already
+                    # committed, or default to one fixed side rather than guess from noise.
+                    self.obstacle_avoidance_direction = self.obstacle_avoidance_direction or 1
+                else:
+                    self.obstacle_avoidance_direction = -1 if left_density < right_density else 1
+            self.obstacle_avoidance_until = now + hold_seconds
+            twist.angular.z = turn_speed * self.obstacle_avoidance_direction
+            if yolo_obstacle is not None:
+                detail = "yolo obstacle: {0} area={1:.3f}, dir={2:+d}".format(
+                    yolo_obstacle[0], yolo_obstacle[1], self.obstacle_avoidance_direction
+                )
+            else:
+                detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}, color={3}, sudden={4}, dir={5:+d}".format(
+                    obstacle_density, left_density, right_density, color_obstacle, sudden_change, self.obstacle_avoidance_direction
+                )
             self.maybe_trigger_vlm(detail)
             self.forward_streak_started_at = 0.0
             self.publish_debug_frame(frame, True, detail)
             return twist, detail
 
-        if obstacle_density > stop_threshold or color_obstacle or sudden_change:
-            twist.angular.z = -turn_speed if left_density < right_density else turn_speed
-            detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}, color={3}, sudden={4}".format(
-                obstacle_density, left_density, right_density, color_obstacle, sudden_change
-            )
-            self.maybe_trigger_vlm(detail)
-            self.forward_streak_started_at = 0.0
+        # No obstacle on this frame - but a single clear reading isn't trusted either.
+        # Keep turning the committed direction until the hold period has elapsed AND
+        # several consecutive frames confirm clear, so one noisy "clear" frame can't
+        # let the robot lurch forward into something that's still there (this was the
+        # other half of the actual failure: it would occasionally read clear mid-flap
+        # and drive straight into the obstacle it was still turning away from).
+        self.obstacle_clear_streak += 1
+        if self.obstacle_avoidance_direction != 0 and (now < self.obstacle_avoidance_until or self.obstacle_clear_streak < confirm_frames):
+            twist.angular.z = turn_speed * self.obstacle_avoidance_direction
+            detail = "clearing obstacle: confirming clear ({0}/{1})".format(self.obstacle_clear_streak, confirm_frames)
             self.publish_debug_frame(frame, True, detail)
             return twist, detail
+        self.obstacle_avoidance_direction = 0
 
         # Steer away from visual clutter. Lower edge density is treated as clearer floor/path.
         # Ramp up from a crawl at the start of every forward run (including right
         # after an obstacle turn above) instead of jumping straight to full speed,
         # in case an obstacle is still close as the path just cleared.
-        now = time.monotonic()
         if self.forward_streak_started_at <= 0.0:
             self.forward_streak_started_at = now
         ramp_seconds = float(self.get_parameter("speed_ramp_seconds").value)
         min_factor = float(self.get_parameter("speed_ramp_min_factor").value)
         ramp_factor = clamp((now - self.forward_streak_started_at) / max(ramp_seconds, 0.01), min_factor, 1.0)
 
-        steer = clamp((right_density - left_density) * 2.4, -1.0, 1.0)
+        # Smooth the steering signal too - without this, tiny frame-to-frame noise
+        # in left/right density (not just during an obstacle event) made the robot
+        # twitch side to side even while just driving down a clear path.
+        steer_raw = clamp((right_density - left_density) * 2.4, -1.0, 1.0)
+        smoothing_alpha = float(self.get_parameter("steer_smoothing_alpha").value)
+        self.smoothed_steer = smoothing_alpha * steer_raw + (1.0 - smoothing_alpha) * self.smoothed_steer
+        steer = self.smoothed_steer
+
         twist.linear.x = float(self.get_parameter("linear_speed").value) * ramp_factor
         twist.angular.z = clamp(steer * float(self.get_parameter("max_angular_speed").value), -0.22, 0.22)
         detail = "path left={0:.3f}, center={1:.3f}, right={2:.3f}, steer={3:.2f}, ramp={4:.2f}".format(

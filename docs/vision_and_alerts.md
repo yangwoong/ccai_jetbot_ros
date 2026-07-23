@@ -189,6 +189,29 @@ vision_nav_node:
     debug_image_enabled: false
 ```
 
+#### 회피 방향이 매 프레임 뒤집혀서 제자리에서 좌우로 떨다가 결국 충돌하던 문제 (수정됨)
+
+디버그 화면을 붙인 뒤 실제 영상으로 확인된 문제입니다. 장애물을 피하려고 회전하는 도중 카메라가 빠르게 움직이며 모션 블러가 심해지면 `left_density`/`right_density`가 둘 다 거의 0으로 무너집니다(엣지 자체가 안 보이므로). 그런데 회전 방향을 **매 프레임마다 새로** `left_density < right_density`로 다시 결정하고 있었기 때문에, 이 노이즈 수준의 값 비교가 프레임마다 뒤집히면서 좌회전↔우회전을 빠르게 반복했습니다(사용자가 관찰한 "제자리에서 좌우로 빠르게 움직이는" 증상). 그러다 우연히 한 프레임이 "CLEAR"로 읽히면 그 순간 바로 전진해버려서, 손바닥을 대고 있어도 통과해서 부딪히는 일이 생겼습니다.
+
+수정한 동작:
+
+1. **회전 방향은 장애물을 처음 감지했을 때 한 번만 정하고, `obstacle_avoidance_hold_seconds`(기본 1초) 동안은 이후 프레임이 뭐라 하든 그 방향을 그대로 유지합니다.** 매 프레임 다시 판단하지 않습니다.
+2. 방향을 정할 때 `left_density`와 `right_density`의 차이가 `steer_direction_noise_floor`(기본 0.01)보다 작으면 — 즉 노이즈 수준이면 — 그 비교를 신뢰하지 않고 이전에 정했던 방향을 그대로 쓰거나(처음이면 기본값으로 오른쪽을) 씁니다.
+3. **장애물이 안 보인다고 바로 전진하지 않습니다.** hold 시간이 다 지났고, 그 후로도 `obstacle_clear_confirm_frames`(기본 5프레임) 연속으로 장애물이 없다고 나와야 그제서야 전진을 재개합니다. 이벤트: `clearing obstacle: confirming clear (N/5)`.
+4. 장애물이 없는 정상 주행 중의 좌우 조향값도 지수평활(EMA, `steer_smoothing_alpha` 기본 0.4)을 적용해서 프레임 노이즈로 인한 미세한 좌우 떨림을 줄였습니다.
+5. 카메라 프레임이 무효 판정(블러 등으로 `camera view is invalid`)을 받고 복구된 직후에도, 장애물 회피 직후와 동일하게 저속부터 다시 램프업합니다(무효 판정 직후 바로 이전 속도로 튀어나가지 않도록).
+
+```yaml
+vision_nav_node:
+  ros__parameters:
+    obstacle_avoidance_hold_seconds: 1.0
+    obstacle_clear_confirm_frames: 5
+    steer_direction_noise_floor: 0.01
+    steer_smoothing_alpha: 0.4
+```
+
+**튜닝 참고**: 여전히 충돌 직전에 전진을 재개한다면 `obstacle_avoidance_hold_seconds`와 `obstacle_clear_confirm_frames`를 올려서 더 오래 확인하게 하세요. 회피 회전이 너무 오래 걸린다 싶으면 반대로 낮추세요. 디버그 화면의 `OBSTACLE`/`CLEAR` 전환이 이제 훨씬 안정적으로(자주 안 뒤집히고) 보여야 합니다 — 여전히 프레임마다 뒤집힌다면 hold/confirm 값을 늘려서 대응하세요.
+
 #### 항상 느린 속도에서 점차 빨라지는 이동 (속도 램프업)
 
 순찰 시작 직후 곧바로 최고 속도로 튀어나가면 바로 앞 장애물에 부딪힐 수 있어서, 모든 전진 이동은 항상 느린 속도에서 시작해 `speed_ramp_seconds` 동안 목표 속도까지 서서히 올라갑니다(`speed_ramp_min_factor`가 시작 속도 비율, 기본 35%). 이 "전진 구간 시작 시각"은 장애물 회피 회전이 일어날 때마다 리셋되므로, **회전 후 다시 전진할 때도 항상 느린 속도부터 다시 시작**합니다 — 방금 피한 장애물이 아직 근처에 있을 수 있기 때문입니다. `patrol_node`의 기본 전진/회전 패턴(비전 없이 순찰할 때)과 자연어 "앞으로 가"/"뒤로 가" 명령에도 동일한 램프업이 적용됩니다(`patrol_node`의 `speed_ramp_seconds`/`speed_ramp_min_factor`).

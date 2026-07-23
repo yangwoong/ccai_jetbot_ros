@@ -98,6 +98,10 @@ vision_nav_node:
     floor_color_diff_threshold: 40.0
     bottom_change_threshold: 35.0
     debug_image_enabled: true
+    obstacle_avoidance_hold_seconds: 1.0
+    obstacle_clear_confirm_frames: 5
+    steer_direction_noise_floor: 0.01
+    steer_smoothing_alpha: 0.4
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
     camera_alert_min_interval_seconds: 10.0
