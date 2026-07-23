@@ -70,6 +70,9 @@ class VisionNavNode(Node):
         self.declare_parameter("obstacle_clear_confirm_frames", 5)
         self.declare_parameter("steer_direction_noise_floor", 0.01)
         self.declare_parameter("steer_smoothing_alpha", 0.4)
+        self.declare_parameter("obstacle_avoidance_max_seconds", 6.0)
+        self.declare_parameter("obstacle_turn_pulse_seconds", 0.3)
+        self.declare_parameter("obstacle_pause_seconds", 0.2)
 
         self.cv2 = None
         self.np = None
@@ -93,15 +96,20 @@ class VisionNavNode(Node):
         self.obstacle_avoidance_direction = 0
         self.obstacle_avoidance_until = 0.0
         self.obstacle_clear_streak = 0
+        self.obstacle_avoidance_started_at = 0.0
         self.smoothed_steer = 0.0
+        self.last_frame = None
+        self.orb = None
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
         self.debug_image_pub = self.create_publisher(CompressedImage, "/ccai/vision_debug_image", 2)
+        self.location_feature_result_pub = self.create_publisher(String, "/ccai/location_feature_result", 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("image_topic").value), self.on_image, 2)
         self.create_subscription(String, "/ccai/status", self.on_robot_status, 10)
+        self.create_subscription(String, "/ccai/location_feature_request", self.on_location_feature_request, 10)
         self.create_timer(0.5, self.watchdog)
         self.init_cv()
         self.publish_event("vision_nav_node ready")
@@ -199,6 +207,7 @@ class VisionNavNode(Node):
             return
 
         self.last_valid_frame_at = time.monotonic()
+        self.last_frame = frame
         self.frame_count += 1
         if drives_forward:
             twist, detail = self.compute_patrol_command(frame)
@@ -263,7 +272,8 @@ class VisionNavNode(Node):
 
         if obstacle_now:
             self.obstacle_clear_streak = 0
-            if self.obstacle_avoidance_direction == 0 or now >= self.obstacle_avoidance_until:
+            was_idle = self.obstacle_avoidance_direction == 0
+            if was_idle or now >= self.obstacle_avoidance_until:
                 noise_floor = float(self.get_parameter("steer_direction_noise_floor").value)
                 if abs(left_density - right_density) < noise_floor:
                     # Densities too close to call (often exactly when blur/proximity
@@ -272,8 +282,41 @@ class VisionNavNode(Node):
                     self.obstacle_avoidance_direction = self.obstacle_avoidance_direction or 1
                 else:
                     self.obstacle_avoidance_direction = -1 if left_density < right_density else 1
+            if was_idle:
+                self.obstacle_avoidance_started_at = now
             self.obstacle_avoidance_until = now + hold_seconds
-            twist.angular.z = turn_speed * self.obstacle_avoidance_direction
+
+            # Real footage in a cluttered/reflective room showed a second failure mode
+            # even after the flapping fix above: the robot spun in place *forever*.
+            # Cause: turning itself blurs every subsequent frame, and that blur trips
+            # the color/sudden-change checks (they were only ever validated against a
+            # roughly stationary camera), so obstacle_now stays true for as long as the
+            # robot keeps rotating - a self-sustaining loop with no way out. Two
+            # independent safeguards:
+            #  1. Hard cap: never rotate in avoidance for more than
+            #     obstacle_avoidance_max_seconds straight - if exceeded, stop dead and
+            #     raise an event instead of spinning indefinitely.
+            #  2. Stutter turn: alternate short turn pulses with brief full stops. The
+            #     stop portions give the camera time to de-blur, so at least some
+            #     frames during avoidance are clean enough to genuinely detect "clear"
+            #     and let obstacle_clear_streak progress instead of being reset every
+            #     single frame by blur-induced false positives.
+            max_seconds = float(self.get_parameter("obstacle_avoidance_max_seconds").value)
+            if self.obstacle_avoidance_started_at > 0.0 and now - self.obstacle_avoidance_started_at > max_seconds:
+                self.obstacle_avoidance_direction = 0
+                self.obstacle_avoidance_started_at = 0.0
+                self.obstacle_clear_streak = 0
+                self.forward_streak_started_at = 0.0
+                detail = "obstacle avoidance timed out after {0:.1f}s, stopping for reassessment".format(max_seconds)
+                self.publish_event_throttled(detail, key="avoidance_timeout")
+                self.publish_debug_frame(frame, True, detail)
+                return twist, detail
+
+            pulse = max(float(self.get_parameter("obstacle_turn_pulse_seconds").value), 0.05)
+            pause = max(float(self.get_parameter("obstacle_pause_seconds").value), 0.0)
+            cycle = pulse + pause
+            in_turn_phase = (now % cycle) < pulse
+            twist.angular.z = turn_speed * self.obstacle_avoidance_direction if in_turn_phase else 0.0
             if yolo_obstacle is not None:
                 detail = "yolo obstacle: {0} area={1:.3f}, dir={2:+d}".format(
                     yolo_obstacle[0], yolo_obstacle[1], self.obstacle_avoidance_direction
@@ -295,11 +338,16 @@ class VisionNavNode(Node):
         # and drive straight into the obstacle it was still turning away from).
         self.obstacle_clear_streak += 1
         if self.obstacle_avoidance_direction != 0 and (now < self.obstacle_avoidance_until or self.obstacle_clear_streak < confirm_frames):
-            twist.angular.z = turn_speed * self.obstacle_avoidance_direction
+            pulse = max(float(self.get_parameter("obstacle_turn_pulse_seconds").value), 0.05)
+            pause = max(float(self.get_parameter("obstacle_pause_seconds").value), 0.0)
+            cycle = pulse + pause
+            in_turn_phase = (now % cycle) < pulse
+            twist.angular.z = turn_speed * self.obstacle_avoidance_direction if in_turn_phase else 0.0
             detail = "clearing obstacle: confirming clear ({0}/{1})".format(self.obstacle_clear_streak, confirm_frames)
             self.publish_debug_frame(frame, True, detail)
             return twist, detail
         self.obstacle_avoidance_direction = 0
+        self.obstacle_avoidance_started_at = 0.0
 
         # Steer away from visual clutter. Lower edge density is treated as clearer floor/path.
         # Ramp up from a crawl at the start of every forward run (including right
@@ -699,6 +747,105 @@ class VisionNavNode(Node):
 
     def region_density(self, image) -> float:
         return float(image.mean()) / 255.0
+
+    def on_location_feature_request(self, msg: String) -> None:
+        """Location "teaching" (see LocationStore/patrol_node) so far has only ever
+        stored a blind timed move-sequence - it has no idea if it actually arrived
+        at the right spot, only that it replayed the same motions. This adds a
+        real visual signal: ORB keypoint descriptors captured at teach-time are
+        compared against the live frame at arrival-time, so a mismatch (furniture
+        moved, wrong location due to drift) can actually be reported instead of
+        assumed away.
+        """
+        try:
+            payload = json.loads(msg.data)
+        except Exception:
+            return
+        action = payload.get("action", "")
+        label = payload.get("label", "")
+        if self.cv2 is None or self.last_frame is None:
+            self.location_feature_result_pub.publish(String(data=json.dumps(
+                {"action": action, "label": label, "error": "no camera frame available"}, ensure_ascii=False
+            )))
+            return
+        try:
+            current_descriptors, keypoint_count = self.extract_orb_features(self.last_frame)
+        except Exception as exc:
+            self.location_feature_result_pub.publish(String(data=json.dumps(
+                {"action": action, "label": label, "error": str(exc)}, ensure_ascii=False
+            )))
+            return
+
+        if action == "capture":
+            result = {
+                "action": "capture",
+                "label": label,
+                "descriptors": self.encode_descriptors(current_descriptors),
+                "keypoints": keypoint_count,
+            }
+        elif action == "match":
+            stored_descriptors = self.decode_descriptors(payload.get("descriptors", ""))
+            ratio, good = self.match_orb_features(stored_descriptors, current_descriptors)
+            result = {
+                "action": "match",
+                "label": label,
+                "match_ratio": ratio,
+                "good_matches": good,
+                "keypoints": keypoint_count,
+            }
+        else:
+            return
+        self.location_feature_result_pub.publish(String(data=json.dumps(result, ensure_ascii=False)))
+
+    def get_orb(self):
+        if self.orb is None:
+            self.orb = self.cv2.ORB_create(nfeatures=300)
+        return self.orb
+
+    def extract_orb_features(self, frame):
+        gray = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2GRAY)
+        _keypoints, descriptors = self.get_orb().detectAndCompute(gray, None)
+        count = 0 if descriptors is None else int(descriptors.shape[0])
+        return descriptors, count
+
+    def encode_descriptors(self, descriptors) -> str:
+        if descriptors is None or descriptors.shape[0] == 0:
+            return ""
+        import base64
+
+        return "{0}|{1}".format(base64.b64encode(descriptors.tobytes()).decode("ascii"), descriptors.shape[0])
+
+    def decode_descriptors(self, encoded: str):
+        if not encoded:
+            return None
+        import base64
+
+        try:
+            data_b64, count_str = encoded.rsplit("|", 1)
+            raw = base64.b64decode(data_b64)
+            return self.np.frombuffer(raw, dtype=self.np.uint8).reshape(int(count_str), 32)
+        except Exception:
+            return None
+
+    def match_orb_features(self, stored_descriptors, current_descriptors):
+        if (
+            stored_descriptors is None
+            or current_descriptors is None
+            or stored_descriptors.shape[0] == 0
+            or current_descriptors.shape[0] == 0
+        ):
+            return 0.0, 0
+        matcher = self.cv2.BFMatcher(self.cv2.NORM_HAMMING, crossCheck=False)
+        pairs = matcher.knnMatch(stored_descriptors, current_descriptors, k=2)
+        good = 0
+        for pair in pairs:
+            if len(pair) < 2:
+                continue
+            best, second = pair
+            if best.distance < 0.75 * second.distance:
+                good += 1
+        ratio = float(good) / float(max(stored_descriptors.shape[0], 1))
+        return ratio, good
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:

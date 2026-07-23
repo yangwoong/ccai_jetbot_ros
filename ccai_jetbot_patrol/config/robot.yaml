@@ -102,6 +102,9 @@ vision_nav_node:
     obstacle_clear_confirm_frames: 5
     steer_direction_noise_floor: 0.01
     steer_smoothing_alpha: 0.4
+    obstacle_avoidance_max_seconds: 6.0
+    obstacle_turn_pulse_seconds: 0.3
+    obstacle_pause_seconds: 0.2
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
     camera_alert_min_interval_seconds: 10.0

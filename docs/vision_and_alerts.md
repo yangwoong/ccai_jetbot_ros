@@ -413,4 +413,33 @@ curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" 
 docker exec ccai-jetbot cat /home/workspace/ccai_jetbot_ros/data/locations.json
 ```
 
+## 9. 회피 중 제자리 회전(무한 스핀) 수정
+
+방향 플래핑(8-2절 이전 항목, 커밋 `2139244`)을 고친 뒤에도 실제 영상에서는 여전히 "제자리에서 계속 회전"하는 문제가 남아 있었습니다. 디버그 오버레이로 확인한 원인은 방향 플래핑과는 다른, 한 단계 더 근본적인 문제였습니다.
+
+- **원인**: 회전 자체가 매 프레임을 블러(motion blur)시키고, 그 블러가 `detect_floor_color_obstacle`/`detect_sudden_bottom_change`(정지된 카메라를 가정하고 만든 검사들)를 다시 "장애물 있음"으로 잘못 트리거합니다. 그 결과 "회전 → 블러 → 장애물 오탐 → 계속 회전"이라는 자기 강화 루프에 갇혀서, `obstacle_clear_streak`가 `obstacle_clear_confirm_frames`까지 쌓일 기회 자체가 없었습니다(회피 중에는 항상 회전 중이라 항상 블러 상태였기 때문).
+- **수정 1 — 스터터 턴(stutter turn)**: 회피 중에는 계속 회전하는 대신 `obstacle_turn_pulse_seconds`(기본 0.3초) 회전 → `obstacle_pause_seconds`(기본 0.2초) 완전 정지를 반복합니다. 정지 구간에서는 블러가 사라지므로 그 프레임들만큼은 장애물 유무를 신뢰성 있게 읽을 수 있고, 실제로 클리어됐다면 그 정지 프레임들에서 `obstacle_clear_streak`가 쌓여 정상적으로 빠져나올 수 있습니다.
+- **수정 2 — 최대 회피 시간 상한(안전망)**: 위 방식으로도 정말 빠져나오지 못하는 극단적 상황(예: 정말로 사방이 막힌 좁은 공간)에 대비해, `obstacle_avoidance_max_seconds`(기본 6초)를 넘겨 계속 회피 중이면 완전 정지하고 `/ccai/events`에 타임아웃 이벤트를 남깁니다. "무한 회전"의 최악의 경우를 6초 정지로 강제 상한선을 둔 것입니다 — 관리자가 상태를 보고 개입할 수 있습니다.
+- 관련 파라미터(`config/robot.yaml`의 `vision_nav_node`): `obstacle_avoidance_max_seconds`, `obstacle_turn_pulse_seconds`, `obstacle_pause_seconds`.
+- 코드: `vision_nav_node.py`의 `compute_patrol_command()`.
+
+## 10. 키보드 수동 조작 (전/후/좌/우/정지)
+
+관리자가 웹채팅에서 키보드(방향키 또는 W/A/S/D, Space=정지)로 로봇을 직접 조작할 수 있습니다.
+
+- **동작 방식**: 키를 누르고 있는 동안 이동하고, 떼는 순간 정지합니다(key down = drive, key up = stop). 텍스트 입력창에 포커스가 있을 때는 동작하지 않아서 채팅 타이핑과 충돌하지 않습니다. 화면에는 키보드 대체용 터치/마우스 버튼 패드도 함께 제공됩니다(모바일 등 물리 키보드가 없는 환경 대비).
+- **구현**: 브라우저에서 키 이벤트가 발생하면 기존 `/api/chat` 엔드포인트로 이미 있는 텍스트 명령("앞으로 가", "뒤로 가", "좌회전해", "우회전해", "정지")을 그대로 전송합니다 — 새 명령 타입이나 LLM 라우팅 없이 `mission.py`의 직접 패턴 매칭 경로를 그대로 재사용하므로 지연이 거의 없습니다.
+- **연속 이동으로 통일**: 이 기능을 위해 `turn_left`/`turn_right`도 `move_forward`/`move_backward`와 동일하게 "정지 명령까지 계속 회전"하는 방식으로 바뀌었습니다(이전에는 회전만 `manual_turn_seconds`(0.8초) 동안의 짧은 넛지였음). 위치 가르치기(`기억 시작` 녹화 중)는 여전히 고정 시간 넛지를 기록해야 재생 가능하므로 그 경우에는 기존 방식(고정 시간)을 그대로 유지합니다.
+- 코드: `web_chat_node.py`의 `HTML_PAGE`(키보드/버튼 JS), `patrol_node.py`의 `start_manual_move()`/`drive_loop()`의 `MANUAL_DRIVE` 분기.
+
+## 11. 위치별 시각 특징 인식 (teach-and-repeat 보강)
+
+기존 teach-and-repeat(8절)는 순수하게 "녹화된 이동 시퀀스를 그대로 재생"하는 방식이라, 오도메트리가 없어 누적된 드리프트로 실제로는 다른 곳에 도착해도 확인할 방법이 없었습니다. 이제 위치를 저장할 때 그 자리의 시각적 특징(ORB 키포인트 디스크립터)도 함께 저장해서, 나중에 그 위치로 이동했을 때 실제로 그 장면이 맞는지 시각적으로 대조합니다.
+
+- **저장 시**: `<이름>으로 저장해`로 위치를 저장하면, `patrol_node`가 `vision_nav_node`에 `/ccai/location_feature_request`(`{"action":"capture","label":"정문"}`)를 보냅니다. `vision_nav_node`는 현재 프레임에서 OpenCV ORB(`cv2.ORB_create(nfeatures=300)`)로 키포인트 디스크립터를 추출해 base64로 인코딩한 뒤 `/ccai/location_feature_result`로 돌려주고, `patrol_node`가 이를 `data/locations.json`의 해당 위치에 `features`/`keypoints`로 저장합니다.
+- **도착 시**: 저장된 이동 시퀀스 재생이 끝나 도착하면(`REPLAYING` 상태 종료), 저장된 특징이 있으면 `{"action":"match", ...}` 요청을 보내 현재 프레임의 디스크립터와 BFMatcher(Hamming 거리, Lowe's ratio test 0.75)로 비교합니다. 결과는 "visual check at 정문: 일치 (good matches=38, ratio=0.42, keypoints=91)" 같은 형태로 이벤트에 남아 텔레그램/웹채팅에서 확인할 수 있습니다. 일치율(`match_ratio`)이 낮으면 "불일치 가능성 (다른 곳일 수 있음)"으로 표시되어, 드리프트로 엉뚱한 곳에 도착했을 가능성을 관리자가 바로 알 수 있습니다.
+- **하위 호환**: 특징 없이(이전 버전에서) 저장된 위치는 `features`가 빈 문자열이라 매칭을 건너뛰고 기존처럼 동작합니다. 평평하고 특징이 거의 없는 장면(흰 벽 등)은 키포인트가 거의 안 나올 수 있는데, 이 경우 "no distinct visual features found" 이벤트를 남기고 이동 시퀀스만으로 저장을 유지합니다(완전 실패시키지 않음).
+- 관련 코드: `locations.py`(`features`/`keypoints` 필드, `set_features`/`get_features`), `vision_nav_node.py`(`on_location_feature_request`, `extract_orb_features`, `encode_descriptors`/`decode_descriptors`, `match_orb_features`), `patrol_node.py`(`save_recorded_location`, `on_location_feature_result`, `REPLAYING` 도착 분기).
+- **한계**: SLAM/실제 위치추정이 아니라 "이 장면이 이전에 본 장면과 시각적으로 비슷한가"만 확인하는 수준입니다. 조명이 크게 바뀌거나 가구가 옮겨지면 일치율이 낮게 나올 수 있습니다. 그래도 "전혀 확인 안 함"보다는 훨씬 나은 신뢰도를 제공합니다.
+
 관련 파라미터 (`robot.yaml` → `patrol_node`): `locations_file` (기본 `data/locations.json`).

@@ -244,6 +244,13 @@ HTML_PAGE = """
     form { display: flex; gap: 8px; margin-top: 12px; }
     input { flex: 1; padding: 12px; border: 1px solid #c7d0dd; border-radius: 6px; font-size: 16px; }
     button { padding: 0 16px; border: 0; border-radius: 6px; background: #1463ff; color: white; font-weight: 700; }
+    #keypad { margin-top: 16px; }
+    #keypad .hint { font-size: 12px; color: #5a6572; margin: 0 0 8px; }
+    #keypad .pad { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 200px; }
+    #keypad .row { display: flex; gap: 6px; }
+    #keypad button.k { width: 60px; height: 48px; font-size: 20px; background: #1463ff; color: white; border: 0; border-radius: 8px; user-select: none; touch-action: manipulation; }
+    #keypad button.k.stop { background: #d92b2b; }
+    #keypad button.k.active { filter: brightness(0.75); }
   </style>
 </head>
 <body>
@@ -256,6 +263,18 @@ HTML_PAGE = """
   <p id="visionDetail">vision detail</p>
   <section id="log"></section>
   <form id="form"><input id="message" autocomplete="off" placeholder="status, patrol start, inspect entrance"><button>Send</button></form>
+  <div id="keypad">
+    <p class="hint">키보드 방향키(또는 W/A/S/D)를 누르고 있으면 이동, 떼면 정지. Space=정지. (입력창에 포커스가 있을 때는 동작하지 않음)</p>
+    <div class="pad">
+      <button type="button" class="k" data-cmd="앞으로 가" id="kUp">▲</button>
+      <div class="row">
+        <button type="button" class="k" data-cmd="좌회전해" id="kLeft">◀</button>
+        <button type="button" class="k stop" data-cmd="정지" id="kStop">■</button>
+        <button type="button" class="k" data-cmd="우회전해" id="kRight">▶</button>
+      </div>
+      <button type="button" class="k" data-cmd="뒤로 가" id="kDown">▼</button>
+    </div>
+  </div>
 </main>
 <script>
 const log = document.getElementById('log');
@@ -292,6 +311,65 @@ setInterval(refresh, 1000);
 setInterval(refreshCamera, 150);
 refresh();
 refreshCamera();
+
+function sendCommand(message) {
+  fetch('/api/chat', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({message})});
+}
+
+// Keyboard teleop: key down drives, key up stops - mirrors move_forward/move_backward/
+// turn_left/turn_right's "continues until stopped" semantics in patrol_node, so a
+// single keystroke session maps directly onto one manual_drive episode.
+const keyCommandMap = {
+  ArrowUp: '앞으로 가', KeyW: '앞으로 가',
+  ArrowDown: '뒤로 가', KeyS: '뒤로 가',
+  ArrowLeft: '좌회전해', KeyA: '좌회전해',
+  ArrowRight: '우회전해', KeyD: '우회전해',
+  Space: '정지', Escape: '정지',
+};
+const keyToButtonId = {
+  ArrowUp: 'kUp', KeyW: 'kUp', ArrowDown: 'kDown', KeyS: 'kDown',
+  ArrowLeft: 'kLeft', KeyA: 'kLeft', ArrowRight: 'kRight', KeyD: 'kRight',
+};
+const pressedKeys = new Set();
+function isTypingTarget(el) {
+  return el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA');
+}
+document.addEventListener('keydown', (event) => {
+  if (isTypingTarget(event.target)) return;
+  const cmd = keyCommandMap[event.code];
+  if (!cmd) return;
+  event.preventDefault();
+  if (pressedKeys.has(event.code)) return;
+  pressedKeys.add(event.code);
+  const btnId = keyToButtonId[event.code];
+  if (btnId) document.getElementById(btnId).classList.add('active');
+  sendCommand(cmd);
+});
+document.addEventListener('keyup', (event) => {
+  if (!keyCommandMap[event.code]) return;
+  event.preventDefault();
+  pressedKeys.delete(event.code);
+  const btnId = keyToButtonId[event.code];
+  if (btnId) document.getElementById(btnId).classList.remove('active');
+  if (event.code === 'Space' || event.code === 'Escape') return;
+  if (pressedKeys.size === 0) sendCommand('정지');
+});
+
+// On-screen buttons: touch/mouse press-and-hold behaves the same as a held key.
+document.querySelectorAll('#keypad button.k').forEach((btn) => {
+  const cmd = btn.dataset.cmd;
+  const press = (event) => { event.preventDefault(); btn.classList.add('active'); sendCommand(cmd); };
+  const release = (event) => {
+    event.preventDefault();
+    btn.classList.remove('active');
+    if (cmd !== '정지') sendCommand('정지');
+  };
+  btn.addEventListener('mousedown', press);
+  btn.addEventListener('touchstart', press);
+  btn.addEventListener('mouseup', release);
+  btn.addEventListener('mouseleave', release);
+  btn.addEventListener('touchend', release);
+});
 </script>
 </body>
 </html>

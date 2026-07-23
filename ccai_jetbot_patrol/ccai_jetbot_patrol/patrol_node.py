@@ -69,10 +69,12 @@ class PatrolNode(Node):
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.vlm_trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
+        self.location_feature_request_pub = self.create_publisher(String, "/ccai/location_feature_request", 10)
         self.create_subscription(String, "/ccai/mission_command", self.on_mission_command, 10)
         self.create_subscription(String, "/ccai/vlm_observation", self.on_vlm_observation, 10)
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
         self.create_subscription(Twist, "/ccai/vision_cmd_vel", self.on_vision_cmd_vel, 10)
+        self.create_subscription(String, "/ccai/location_feature_result", self.on_location_feature_result, 10)
 
         heartbeat = float(self.get_parameter("heartbeat_seconds").value)
         self.create_timer(heartbeat, self.publish_status)
@@ -161,6 +163,12 @@ class PatrolNode(Node):
         self.publish_event(f"location saved: {label} ({len(self.record_buffer)} steps)")
         self.recording = False
         self.record_buffer = []
+        # Capture visual features of the current view too, so future arrivals at
+        # this label can be visually confirmed instead of trusting the timed
+        # move-sequence alone (which drifts with no odometry to correct it).
+        self.location_feature_request_pub.publish(
+            String(data=json.dumps({"action": "capture", "label": label}, ensure_ascii=False))
+        )
 
     def start_manual_move(self, kind: str, modifier: str = "") -> None:
         self.manual_kind = kind
@@ -172,7 +180,11 @@ class PatrolNode(Node):
                 else float(self.get_parameter("manual_move_seconds").value)
             )
             self.record_buffer.append({"type": kind, "duration": duration})
-        if kind in {"move_forward", "move_backward"} and not self.recording:
+        if kind in {"move_forward", "move_backward", "turn_left", "turn_right"} and not self.recording:
+            # All four directions drive continuously until an explicit stop, rather
+            # than a brief timed nudge - this is what keyboard teleop needs (key down
+            # = move, key up = stop) and matches how an admin expects a plain drive
+            # instruction to behave when typed as chat text too.
             self.manual_drive_slow = modifier == "slow"
             self.current_target = kind
             self.set_state(PatrolState.MANUAL_DRIVE)
@@ -218,6 +230,39 @@ class PatrolNode(Node):
 
     def on_vision_status(self, msg: String) -> None:
         self.last_vision_status = msg.data
+
+    def on_location_feature_result(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            return
+        action = payload.get("action", "")
+        label = payload.get("label", "")
+        if payload.get("error"):
+            self.publish_event(f"location feature {action} failed for {label}: {payload['error']}")
+            return
+        if action == "capture":
+            descriptors = payload.get("descriptors", "")
+            keypoints = int(payload.get("keypoints", 0))
+            if descriptors:
+                self.location_store.set_features(label, descriptors, keypoints)
+                self.publish_event(f"visual features captured for {label} ({keypoints} keypoints)")
+            else:
+                self.publish_event(
+                    f"no distinct visual features found for {label} (plain scene); "
+                    "location saved with move-sequence only"
+                )
+        elif action == "match":
+            ratio = float(payload.get("match_ratio", 0.0))
+            good = int(payload.get("good_matches", 0))
+            keypoints = int(payload.get("keypoints", 0))
+            confident = ratio >= 0.15
+            verdict = "일치" if confident else "불일치 가능성 (다른 곳일 수 있음)"
+            self.publish_event(
+                "visual check at {0}: {1} (good matches={2}, ratio={3:.2f}, keypoints={4})".format(
+                    label, verdict, good, ratio, keypoints
+                )
+            )
 
     def on_vision_cmd_vel(self, msg: Twist) -> None:
         self.last_vision_cmd = msg
@@ -287,18 +332,30 @@ class PatrolNode(Node):
             elif self.manual_kind == "turn_right":
                 twist.angular.z = angular_speed
         elif self.state == PatrolState.MANUAL_DRIVE:
-            # No auto-timeout: "앞으로 가" / "천천히 앞으로 가" keep driving until an
-            # explicit stop/new direction command, per how an admin actually expects
-            # a plain drive instruction to behave (not a brief safety nudge).
+            # No auto-timeout: "앞으로 가" / "천천히 앞으로 가" / keyboard-held turns keep
+            # driving until an explicit stop/new direction command, per how an admin
+            # actually expects a plain drive instruction to behave (not a brief safety
+            # nudge) - and per how key-down/key-up teleop naturally works.
             elapsed = time.monotonic() - self.state_changed_at
-            speed = linear_speed * self.ramp_factor(elapsed)
-            if self.manual_drive_slow:
-                speed *= float(self.get_parameter("manual_drive_slow_factor").value)
-            twist.linear.x = speed if self.manual_kind == "move_forward" else -speed
+            if self.manual_kind in {"move_forward", "move_backward"}:
+                speed = linear_speed * self.ramp_factor(elapsed)
+                if self.manual_drive_slow:
+                    speed *= float(self.get_parameter("manual_drive_slow_factor").value)
+                twist.linear.x = speed if self.manual_kind == "move_forward" else -speed
+            elif self.manual_kind == "turn_left":
+                twist.angular.z = -angular_speed
+            elif self.manual_kind == "turn_right":
+                twist.angular.z = angular_speed
         elif self.state == PatrolState.REPLAYING:
             if self.replay_index >= len(self.replay_steps):
                 self.stop_motion()
                 self.publish_event(f"arrived at {self.replay_location}")
+                stored_features = self.location_store.get_features(self.replay_location)
+                if stored_features:
+                    self.location_feature_request_pub.publish(String(data=json.dumps(
+                        {"action": "match", "label": self.replay_location, "descriptors": stored_features},
+                        ensure_ascii=False,
+                    )))
                 self.request_analysis(self.replay_question, location=self.replay_location)
                 self.set_state(PatrolState.STOPPED)
                 return
