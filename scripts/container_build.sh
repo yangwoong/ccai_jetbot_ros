@@ -23,7 +23,7 @@ if ! command -v colcon >/dev/null 2>&1; then
 fi
 
 if [ "${INSTALL_OS_DEPS}" = "1" ]; then
-  apt-get update
+  ./scripts/container_fix_ros_apt_key.sh
   apt-get install -y \
     python3-colcon-common-extensions \
     python3-pip \

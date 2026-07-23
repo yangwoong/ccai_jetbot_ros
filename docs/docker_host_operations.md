@@ -268,3 +268,18 @@ docker restart ccai-jetbot
 ```
 
 `ddsi_udp_conn_write to udp/... failed` 로그가 반복되면 외부 ROS2/DDS participant로 전송을 시도하다 실패하는 상태입니다. 이 로봇 프로젝트는 웹/텔레그램으로 외부와 통신하므로 기본값 `ROS_LOCALHOST_ONLY=1`을 권장합니다.
+
+## 7. `apt-get update`가 `EXPKEYSIG ... Open Robotics`로 실패할 때
+
+Open Robotics가 2025년에 ROS2 apt 저장소 서명 키를 교체하면서, 그 이전에 만들어진 이미지(이 `dustynv/ros:humble-desktop-l4t-r32.7.1` 포함)에 들어있던 예전 키가 만료됐습니다. 컨테이너 안에서 `apt-get update`를 실행하는 모든 스크립트(`container_build.sh`, `scripts/install_realsense_d435i.sh` 등)가 이 에러로 실패할 수 있습니다:
+
+```
+Err:1 http://packages.ros.org/ros2/ubuntu bionic InRelease
+  The following signatures were invalid: EXPKEYSIG F42ED6FBAB17C654 Open Robotics <info@osrfoundation.org>
+```
+
+`scripts/container_fix_ros_apt_key.sh`가 이 문제를 자동으로 감지해서 새 키를 받아오도록 이미 `container_build.sh`와 `install_realsense_d435i.sh` 시작 부분에 연결해뒀습니다 — 정상적인 경우 이 문서를 보고 따로 조치할 필요는 없습니다. 그래도 직접 확인/재실행하려면:
+
+```bash
+docker exec -it ccai-jetbot bash -c "cd /home/workspace/ccai_jetbot_ros && ./scripts/container_fix_ros_apt_key.sh"
+```

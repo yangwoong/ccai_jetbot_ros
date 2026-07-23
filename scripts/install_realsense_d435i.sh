@@ -46,7 +46,7 @@ else
 fi
 
 echo "[ccai] Installing librealsense2 build dependencies"
-apt-get update
+./scripts/container_fix_ros_apt_key.sh
 apt-get install -y \
   git cmake build-essential pkg-config \
   libssl-dev libusb-1.0-0-dev libudev-dev \
