@@ -60,6 +60,8 @@ class VisionNavNode(Node):
         self.declare_parameter("obstacle_box_min_area", 0.05)
         self.declare_parameter("obstacle_path_bottom_fraction", 0.5)
         self.declare_parameter("obstacle_trigger_min_interval_seconds", 4.0)
+        self.declare_parameter("floor_color_diff_threshold", 40.0)
+        self.declare_parameter("bottom_change_threshold", 35.0)
         self.declare_parameter("speed_ramp_seconds", 1.5)
         self.declare_parameter("speed_ramp_min_factor", 0.35)
         self.declare_parameter("camera_alert_min_interval_seconds", 10.0)
@@ -79,6 +81,7 @@ class VisionNavNode(Node):
         self.forward_streak_started_at = 0.0
         self.event_throttle_at = {}
         self.yolo_cuda_fallback_tried = False
+        self.prev_bottom_mean = None
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
@@ -217,6 +220,15 @@ class VisionNavNode(Node):
         stop_threshold = float(self.get_parameter("obstacle_stop_edge_density").value)
         turn_speed = float(self.get_parameter("turn_speed").value)
 
+        # Edge density alone misses plain/low-texture obstacles: a smooth object
+        # (a wall, a box, a leg, anything low-contrast) produces few Canny edges
+        # and can read as "clear floor" right up until impact. These two checks
+        # don't depend on texture at all - they catch "the floor plane in front
+        # of me no longer looks like the floor plane in front of me a moment ago
+        # / right under me now", which plain/smooth obstacles still trigger.
+        color_obstacle = self.detect_floor_color_obstacle(frame)
+        sudden_change = self.detect_sudden_bottom_change(frame)
+
         yolo_obstacle = self.detect_path_obstacle(frame)
         if yolo_obstacle is not None:
             twist.angular.z = -turn_speed if left_density < right_density else turn_speed
@@ -225,9 +237,11 @@ class VisionNavNode(Node):
             self.forward_streak_started_at = 0.0
             return twist, detail
 
-        if obstacle_density > stop_threshold:
+        if obstacle_density > stop_threshold or color_obstacle or sudden_change:
             twist.angular.z = -turn_speed if left_density < right_density else turn_speed
-            detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}".format(obstacle_density, left_density, right_density)
+            detail = "obstacle center={0:.3f}, left={1:.3f}, right={2:.3f}, color={3}, sudden={4}".format(
+                obstacle_density, left_density, right_density, color_obstacle, sudden_change
+            )
             self.maybe_trigger_vlm(detail)
             self.forward_streak_started_at = 0.0
             return twist, detail
@@ -250,6 +264,52 @@ class VisionNavNode(Node):
             left_density, center_density, right_density, steer, ramp_factor
         )
         return twist, detail
+
+    def detect_floor_color_obstacle(self, frame) -> bool:
+        """Compare a "path ahead" band against a "right under/in front of the
+        wheels" reference band, both in the central driving corridor. A plain
+        obstacle (wall, box, furniture, a leg) usually differs in color/
+        brightness from the floor even when it has almost no texture/edges,
+        so this catches cases the Canny edge-density check misses.
+        """
+        height, width = frame.shape[:2]
+        left = width // 3
+        right = 2 * width // 3
+
+        reference = frame[int(height * 0.90) : height, left:right]
+        path_ahead = frame[int(height * 0.60) : int(height * 0.85), left:right]
+        if reference.size == 0 or path_ahead.size == 0:
+            return False
+
+        reference_mean = reference.reshape(-1, 3).mean(axis=0)
+        path_mean = path_ahead.reshape(-1, 3).mean(axis=0)
+        color_distance = float(self.np.linalg.norm(reference_mean - path_mean))
+        threshold = float(self.get_parameter("floor_color_diff_threshold").value)
+        return color_distance > threshold
+
+    def detect_sudden_bottom_change(self, frame) -> bool:
+        """Frame-to-frame color change of the strip right under the wheels. If
+        an obstacle has crept close enough to also fill the "reference" floor
+        strip used above (so the two bands look similar to each other but
+        both changed from a moment ago), the spatial comparison alone won't
+        catch it - this temporal check does.
+        """
+        height, width = frame.shape[:2]
+        left = width // 3
+        right = 2 * width // 3
+        bottom_strip = frame[int(height * 0.90) : height, left:right]
+        if bottom_strip.size == 0:
+            return False
+
+        current_mean = bottom_strip.reshape(-1, 3).mean(axis=0)
+        previous_mean = self.prev_bottom_mean
+        self.prev_bottom_mean = current_mean
+        if previous_mean is None:
+            return False
+
+        change = float(self.np.linalg.norm(current_mean - previous_mean))
+        threshold = float(self.get_parameter("bottom_change_threshold").value)
+        return change > threshold
 
     def detect_path_obstacle(self, frame):
         """Return (class_name, area_fraction) if a YOLO detection blocks the drivable path ahead."""

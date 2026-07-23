@@ -136,12 +136,18 @@ yolo_engine_path: "data/models/yolov8n.engine"
 
 ### 자율 순찰 (공간/장애물 감지)
 
-`compute_patrol_command`는 기존 엣지 밀도 기반 주행(카메라 하단부의 Canny 엣지 밀도로 좌/중앙/우 클리어니스를 비교해 조향)을 기본 골격으로 유지하면서, YOLO가 있으면 프레임 하단-중앙의 "주행 경로" 영역(가로 가운데 1/3, 세로 하단 `obstacle_path_bottom_fraction` 비율)에 일정 크기(`obstacle_box_min_area`) 이상의 객체가 검출되면 그걸 장애물로 우선 처리해 회전시킵니다. 두 방식이 서로 보완하므로 YOLO 모델이 없어도 기존처럼 동작합니다.
+실제 주행 중 전방 장애물을 인식 못 하고 충돌하는 사례가 있었습니다. 원인은 그 시점에 YOLO가 완전히 비활성화된 상태(TensorRT/OpenCV DNN 둘 다 실패해서 자동 폴백)였고, 남은 엣지 밀도(Canny) 방식만으로는 **표면이 매끈하고 색이 균일한 장애물**(벽, 상자, 다리 등 텍스처가 거의 없는 물체)을 잡아내지 못하기 때문이었습니다 — Canny 엣지는 "질감/윤곽선"을 보는 방식이라, 장애물이 근접해서 화면 대부분을 차지하며 흐릿하고 균일해 보일수록 오히려 엣지가 줄어들어 "빈 바닥"으로 오인하기 쉽습니다.
 
-관련 파라미터 (`robot.yaml` → `vision_nav_node`):
+그래서 장애물 감지를 **4가지 독립적인 신호의 OR 조합**으로 강화했습니다 — 하나라도 장애물이라고 판단하면 회피합니다. YOLO가 꺼져 있어도(엔진/모델이 없거나 실패해도) 나머지 3가지는 계속 동작합니다.
+
+1. **YOLO 바운딩박스** (`detect_path_obstacle`): 주행 경로 영역(가로 가운데 1/3, 세로 하단 `obstacle_path_bottom_fraction` 비율)에 `obstacle_box_min_area` 이상의 객체가 검출되면 장애물로 처리합니다.
+2. **엣지 밀도** (기존): 카메라 하단부의 Canny 엣지 밀도가 `obstacle_stop_edge_density`를 넘으면 장애물로 처리합니다. 질감이 있는 장애물(가구 모서리, 케이블, 패턴 등)에 잘 반응합니다.
+3. **바닥색 대비** (`detect_floor_color_obstacle`, 신규): 바퀴 바로 앞의 "기준 바닥" 색(가장 가까운 하단 스트립)과 조금 더 앞쪽 "주행 경로" 영역의 색을 비교해서, 색 차이(BGR 유클리드 거리)가 `floor_color_diff_threshold`를 넘으면 장애물로 처리합니다. 질감이 없어도 색이 바닥과 다르면 잡아냅니다.
+4. **바닥 급변 감지** (`detect_sudden_bottom_change`, 신규): 바퀴 바로 앞 스트립의 색이 이전 프레임 대비 갑자기 크게 바뀌면(`bottom_change_threshold`) 장애물로 처리합니다. 장애물이 이미 "기준 바닥" 영역까지 침범해서 3번 비교가 무력화되는 근접 상황을 잡기 위한 마지막 안전망입니다.
 
 ```yaml
 yolo_model_path: "data/models/yolov8n.onnx"
+yolo_engine_path: "data/models/yolov8n.engine"
 yolo_input_size: 320
 yolo_confidence: 0.45
 yolo_nms_threshold: 0.45
@@ -149,7 +155,16 @@ yolo_detect_every_n_frames: 3
 obstacle_box_min_area: 0.05
 obstacle_path_bottom_fraction: 0.5
 obstacle_trigger_min_interval_seconds: 4.0
+obstacle_stop_edge_density: 0.16
+floor_color_diff_threshold: 40.0
+bottom_change_threshold: 35.0
 ```
+
+**튜닝 참고**: 이 임계값들은 실제 바닥/조명 조건에서 검증된 게 아니라 합리적인 기본값입니다. 순찰 상태 이벤트(`path left=..., center=..., right=..., steer=..., ramp=...`)와 장애물 이벤트(`obstacle center=..., color=True/False, sudden=True/False`)를 보면서 다음처럼 조정하세요.
+
+- **장애물을 놓치고 부딪힘(감지 안 됨)**: `floor_color_diff_threshold`/`bottom_change_threshold`/`obstacle_stop_edge_density`를 낮춰서 더 민감하게 만드세요.
+- **장애물이 없는데 자꾸 회피함(오탐)**: 반대로 각 임계값을 올리세요. 특히 바닥이 반질반질하거나(반사) 그림자/조명 얼룩이 있으면 `floor_color_diff_threshold`가 너무 낮으면 오탐이 잦을 수 있습니다.
+- 카메라가 아래를 보는 각도, 장착 높이에 따라 "기준 바닥"/"주행 경로" 영역(코드의 `0.60`/`0.85`/`0.90` 비율)이 실제 바닥/장애물과 안 맞을 수 있습니다. 심하게 안 맞으면 `vision_nav_node.py`의 `detect_floor_color_obstacle`/`detect_sudden_bottom_change`의 비율 상수를 조정하세요.
 
 #### 항상 느린 속도에서 점차 빨라지는 이동 (속도 램프업)
 
