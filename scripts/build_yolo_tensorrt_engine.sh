@@ -13,27 +13,37 @@ if [ ! -f "${MODEL_PATH}" ]; then
   exit 1
 fi
 
-run_trtexec() {
-  trtexec \
-    --onnx="${MODEL_PATH}" \
-    --saveEngine="${ENGINE_PATH}" \
-    --fp16 \
-    --skipInference=false
+# JetPack installs trtexec here but usually doesn't put it on PATH.
+FALLBACK_TRTEXEC="/usr/src/tensorrt/bin/trtexec"
+
+find_trtexec() {
+  if command -v trtexec >/dev/null 2>&1; then
+    command -v trtexec
+  elif [ -x "${FALLBACK_TRTEXEC}" ]; then
+    echo "${FALLBACK_TRTEXEC}"
+  fi
 }
 
 echo "building ${ENGINE_PATH} from ${MODEL_PATH} with trtexec (vision_nav_node loads this engine directly if present)"
 
-if command -v trtexec >/dev/null 2>&1; then
-  run_trtexec
+HOST_TRTEXEC="$(find_trtexec || true)"
+
+if [ -n "${HOST_TRTEXEC}" ]; then
+  "${HOST_TRTEXEC}" \
+    --onnx="${MODEL_PATH}" \
+    --saveEngine="${ENGINE_PATH}" \
+    --fp16 \
+    --skipInference=false
 elif docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
-  echo "trtexec not found on host; running inside container ${CONTAINER_NAME}"
+  echo "trtexec not found on host PATH; running inside container ${CONTAINER_NAME}"
   docker exec -w "/home/workspace/$(basename "$(pwd)")" "${CONTAINER_NAME}" bash -c "
     set -e
-    trtexec --onnx='${MODEL_PATH}' --saveEngine='${ENGINE_PATH}' --fp16 --skipInference=false
+    TRTEXEC=\$(command -v trtexec || echo '${FALLBACK_TRTEXEC}')
+    \"\${TRTEXEC}\" --onnx='${MODEL_PATH}' --saveEngine='${ENGINE_PATH}' --fp16 --skipInference=false
   "
 else
-  echo "trtexec not found on host and container ${CONTAINER_NAME} is not running" >&2
-  echo "trtexec ships with the L4T/JetPack TensorRT install; it should be on PATH on the Jetson host or inside the dustynv ROS container" >&2
+  echo "trtexec not found on host (checked PATH and ${FALLBACK_TRTEXEC}) and container ${CONTAINER_NAME} is not running" >&2
+  echo "trtexec ships with the L4T/JetPack TensorRT install (dpkg -l | grep tensorrt to confirm it's installed)" >&2
   exit 1
 fi
 
