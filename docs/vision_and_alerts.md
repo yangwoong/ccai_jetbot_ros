@@ -529,7 +529,8 @@ CSI 카메라를 천장을 보도록 마운트를 바꾸고, 전방에는 실측
 
 - **새 노드 `depth_nav_node`**: D435i 깊이 이미지를 좌/중/우 3분할해 중앙값 실측 거리(m)로 장애물을 판정합니다. §9에서 CSI용으로 검증한 커밋-유지/클리어확인/스터터턴/최대회피시간 상태 머신을 그대로 재사용하되, 입력이 실측 거리라서 텍스처·색·조명에 흔들리는 §15류의 오탐이 구조적으로 없습니다. 순찰 중 장애물이 없으면 더 열린(먼) 방향으로 조향합니다. `patrol_node`가 이미 구독하는 `/ccai/vision_cmd_vel`/`/ccai/vision_status`에 그대로 발행하므로 `patrol_node`는 무수정입니다.
 - **CSI 카메라 = 객체 인식 전용**: `vision_nav_node`에 `drive_enabled` 파라미터(기본 `true`)를 추가했습니다. D435i를 켜면 `false`로 바꿔서, CSI는 YOLO 객체 인식/사람 따라가기/디버그 오버레이는 계속하되 주행 명령은 더 이상 내지 않습니다(천장을 보는 카메라로는 바닥 장애물 검사 자체가 의미 없으므로).
-- **기본값은 기존 그대로**: `depth_nav_node.enabled: false`, `vision_nav_node.drive_enabled: true`가 기본값이라, D435i를 연결하고 설정을 바꾸기 전까지는 **기존 CSI+YOLO 순찰 동작에 아무 변화가 없습니다.**
+- **D435i 연결 이후 기본값**: `depth_nav_node.enabled: true`, `vision_nav_node.drive_enabled: false`로 전환했습니다 — D435i가 순찰/수동전진 주행을 맡고, CSI+YOLO는 객체 인식/사람 따라가기/디버그 용도로 계속 동작합니다. D435i 없이 예전처럼 CSI만으로 순찰하려면 두 값을 되돌리세요.
+- **컨테이너 재생성 필요**: `CCAI_ENABLE_DEPTH_NAV` 환경변수와 D435i용 USB 디바이스 마운트(`scripts/host_docker_run.sh` 참고)는 `docker run` 시점에 고정됩니다. 이미 떠 있는 컨테이너를 `docker restart`만 하면 적용되지 않으니, `scripts/host_docker_run.sh`를 다시 실행해서 컨테이너를 새로 만들어야 합니다.
 - **설치**: `scripts/install_realsense_d435i.sh`(컨테이너 안에서 실행) — librealsense2를 소스로 빌드(Jetson arm64용 apt 패키지가 없어서, 커널 패치 불필요한 `-DFORCE_RSUSB_BACKEND=true` 유저스페이스 백엔드 사용)하고 `realsense-ros`도 소스 빌드합니다. 스크립트 안 태그/브랜치 이름은 이 환경에서 실시간 검증되지 않았다는 점을 스크립트 주석에도 남겼습니다 — 클론이 실패하면 실제 저장소에서 현재 태그를 확인하세요.
 - 활성화 절차: D435i 연결 → `realsense2_camera` 런치로 `/camera/camera/depth/image_rect_raw` 발행 확인 → `robot.yaml`에서 `depth_nav_node.enabled: true`, `vision_nav_node.drive_enabled: false` → `CCAI_ENABLE_DEPTH_NAV=1`로 스택 실행.
 - 코드: `ccai_jetbot_patrol/depth_nav_node.py`(신규), `vision_nav_node.py`(`drive_enabled`), `launch/patrol.launch.py`(`CCAI_ENABLE_DEPTH_NAV`), `config/robot.yaml`(`depth_nav_node` 블록), `scripts/install_realsense_d435i.sh`(신규).

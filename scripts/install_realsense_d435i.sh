@@ -36,6 +36,10 @@ if [ -f /opt/ros/humble/setup.bash ]; then
   set +u
   source /opt/ros/humble/setup.bash
   set -u
+elif [ -f /opt/ros/humble/install/setup.bash ]; then
+  set +u
+  source /opt/ros/humble/install/setup.bash
+  set -u
 else
   echo "ROS2 Humble setup.bash not found" >&2
   exit 1
@@ -93,13 +97,19 @@ colcon build --symlink-install
 cat <<'EOF'
 
 [ccai] Done. Next steps:
-  1. Connect the D435i via USB and confirm it's a forward-facing mount (not the CSI camera, which stays ceiling-mounted for object recognition).
-  2. source install/setup.bash
-  3. ros2 launch realsense2_camera rs_launch.py enable_depth:=true enable_color:=true
-  4. In another shell: ros2 topic echo /camera/camera/depth/image_rect_raw --once
-     (confirm it publishes - adjust config/robot.yaml depth_nav_node.depth_image_topic if the actual topic name differs, e.g. no double "camera/camera" namespace on some realsense-ros versions)
-  5. Once confirmed, in config/robot.yaml set:
-       depth_nav_node.enabled: true
-       vision_nav_node.drive_enabled: false
-  6. Launch the full stack with CCAI_ENABLE_DEPTH_NAV=1 in the environment.
+  1. Connect the D435i via USB (forward-facing mount - the CSI camera stays ceiling-mounted for object recognition).
+  2. Sanity-check the realsense driver on its own first, before trusting the integrated launch:
+       source install/setup.bash
+       ros2 launch realsense2_camera rs_launch.py enable_depth:=true enable_color:=false
+     In another shell: ros2 topic echo /camera/camera/depth/image_rect_raw --once
+     (confirm it publishes - if the topic name differs, e.g. no double "camera/camera" namespace on
+      some realsense-ros versions, update depth_nav_node.depth_image_topic in config/robot.yaml)
+  3. config/robot.yaml already defaults to depth_nav_node.enabled: true and
+     vision_nav_node.drive_enabled: false now that D435i is the primary nav sensor.
+  4. Recreate the container so it picks up CCAI_ENABLE_DEPTH_NAV and the USB device mount
+     (a plain `docker restart` does NOT pick up new `docker run` flags/env):
+       ./scripts/host_docker_run.sh
+     This launches depth_nav_node AND the realsense2_camera driver together (patrol.launch.py
+     includes rs_launch.py when CCAI_ENABLE_DEPTH_NAV=1) - no separate manual realsense launch
+     needed for normal operation once step 2 confirms it works.
 EOF

@@ -16,11 +16,13 @@ if [ "${CCAI_SAFE_START}" = "1" ]; then
   CCAI_ENABLE_CAMERA="${CCAI_ENABLE_CAMERA:-0}"
   CCAI_ENABLE_VISION="${CCAI_ENABLE_VISION:-0}"
   CCAI_ENABLE_VLM="${CCAI_ENABLE_VLM:-0}"
+  CCAI_ENABLE_DEPTH_NAV="${CCAI_ENABLE_DEPTH_NAV:-0}"
 else
   CCAI_ENABLE_HARDWARE="${CCAI_ENABLE_HARDWARE:-1}"
   CCAI_ENABLE_CAMERA="${CCAI_ENABLE_CAMERA:-1}"
   CCAI_ENABLE_VISION="${CCAI_ENABLE_VISION:-1}"
   CCAI_ENABLE_VLM="${CCAI_ENABLE_VLM:-1}"
+  CCAI_ENABLE_DEPTH_NAV="${CCAI_ENABLE_DEPTH_NAV:-1}"
 fi
 
 CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL:-1}"
@@ -100,6 +102,14 @@ if [ "${CCAI_ENABLE_HARDWARE}" = "1" ]; then
   done
 fi
 
+# D435i is accessed by librealsense's userspace/libusb (RSUSB) backend, not
+# V4L2 - see scripts/install_realsense_d435i.sh - so it needs raw USB bus
+# access rather than a /dev/video* device node.
+if [ "${CCAI_ENABLE_DEPTH_NAV}" = "1" ] && [ -d /dev/bus/usb ]; then
+  DOCKER_ARGS+=(-v /dev/bus/usb:/dev/bus/usb)
+  DOCKER_ARGS+=(--device-cgroup-rule "c 189:* rmw")
+fi
+
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 docker run -d \
@@ -111,6 +121,7 @@ docker run -d \
   -e CCAI_ENABLE_VISION="${CCAI_ENABLE_VISION}" \
   -e CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL}" \
   -e CCAI_ENABLE_VLM="${CCAI_ENABLE_VLM}" \
+  -e CCAI_ENABLE_DEPTH_NAV="${CCAI_ENABLE_DEPTH_NAV}" \
   -e CCAI_ENABLE_LLM="${CCAI_ENABLE_LLM}" \
   -e CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB}" \
   -e CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM}" \
@@ -140,6 +151,6 @@ docker run -d \
   bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
-echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
+echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} depth_nav=${CCAI_ENABLE_DEPTH_NAV} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"

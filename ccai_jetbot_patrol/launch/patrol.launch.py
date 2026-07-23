@@ -1,6 +1,8 @@
 import os
 
 from launch import LaunchDescription
+from launch.actions import IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch.substitutions import PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
@@ -93,6 +95,28 @@ def generate_launch_description():
         nodes.append(Node(package="ccai_jetbot_patrol", executable="vision_nav_node", name="vision_nav_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_DEPTH_NAV", False):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="depth_nav_node", name="depth_nav_node", parameters=[config], output="screen"))
+        if env_enabled("CCAI_ENABLE_REALSENSE_DRIVER", True):
+            # Starts the D435i driver itself (realsense2_camera) as part of
+            # the same launch, so depth_nav_node has something to subscribe to
+            # without a separate manual `ros2 launch realsense2_camera ...`
+            # command. Requires scripts/install_realsense_d435i.sh to have
+            # been run first; set CCAI_ENABLE_REALSENSE_DRIVER=0 to skip this
+            # and launch the realsense driver yourself instead (e.g. a
+            # different resolution/rate, or it's already running elsewhere).
+            nodes.append(IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(
+                    PathJoinSubstitution([FindPackageShare("realsense2_camera"), "launch", "rs_launch.py"])
+                ),
+                launch_arguments={
+                    "enable_depth": "true",
+                    "enable_color": "false",
+                    "enable_infra1": "false",
+                    "enable_infra2": "false",
+                    "enable_gyro": "false",
+                    "enable_accel": "false",
+                    "depth_module.profile": "640x480x30",
+                }.items(),
+            ))
     if env_enabled("CCAI_ENABLE_PATROL", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="patrol_node", name="patrol_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_VLM", True):

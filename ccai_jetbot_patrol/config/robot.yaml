@@ -76,11 +76,12 @@ camera_node:
 vision_nav_node:
   ros__parameters:
     enabled: true
-    # Flip to false once a D435i is connected and depth_nav_node (below) is
-    # enabled to drive instead - CSI stays on for YOLO/follow-person/debug
-    # overlay, it just stops contributing patrol/manual-forward drive
-    # commands. See depth_nav_node's docstring and docs/navigation_roadmap.md.
-    drive_enabled: true
+    # false: D435i (depth_nav_node below) is connected and drives instead -
+    # CSI stays on for YOLO/follow-person/debug overlay, it just stops
+    # contributing patrol/manual-forward drive commands (its floor-obstacle
+    # heuristics are meaningless pointed at a ceiling). See depth_nav_node's
+    # docstring and docs/navigation_roadmap.md.
+    drive_enabled: false
     image_topic: "/image_raw/compressed"
     linear_speed: 0.045
     turn_speed: 0.16
@@ -116,10 +117,9 @@ vision_nav_node:
 
 depth_nav_node:
   ros__parameters:
-    # Set true (and CCAI_ENABLE_DEPTH_NAV=1 at launch) once a forward-facing
-    # D435i is connected. Remember to set vision_nav_node.drive_enabled: false
-    # above at the same time. See depth_nav_node.py's docstring.
-    enabled: false
+    # true: D435i connected and driving patrol/manual-forward. Also requires
+    # CCAI_ENABLE_DEPTH_NAV=1 at launch (see host_docker_run.sh/.env).
+    enabled: true
     depth_image_topic: "/camera/camera/depth/image_rect_raw"
     depth_scale_to_meters: 0.001
     min_valid_depth_m: 0.2
