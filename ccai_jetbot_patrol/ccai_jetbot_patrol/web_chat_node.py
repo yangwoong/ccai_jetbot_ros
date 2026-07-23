@@ -312,7 +312,14 @@ setInterval(refreshCamera, 150);
 refresh();
 refreshCamera();
 
+let lastSent = {message: '', at: 0};
 function sendCommand(message) {
+  // Collapses an accidental duplicate fired within the same event tick (e.g. a
+  // touch's synthetic follow-up mouse events) without blocking legitimate
+  // repeated presses, which are always well over this interval apart.
+  const now = Date.now();
+  if (message === lastSent.message && now - lastSent.at < 150) return;
+  lastSent = {message, at: now};
   fetch('/api/chat', {method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({message})});
 }
 
@@ -346,6 +353,14 @@ document.addEventListener('keydown', (event) => {
   sendCommand(cmd);
 });
 document.addEventListener('keyup', (event) => {
+  // Same guard as keydown: without this, releasing any of W/A/S/D while typing a
+  // Korean sentence in the chat box (2-beolsik maps common jamo like ㅈ/ㅁ/ㄴ/ㅇ
+  // onto exactly those physical keys) fired a spurious 정지 on every such
+  // keyup, since keydown was correctly suppressed (so pressedKeys stayed empty)
+  // but keyup was not - `pressedKeys.size === 0` was then always true and sent
+  // stop on essentially every other letter typed. This is what was seen as
+  // "정지 being logged repeatedly with no key held."
+  if (isTypingTarget(event.target)) return;
   if (!keyCommandMap[event.code]) return;
   event.preventDefault();
   pressedKeys.delete(event.code);
@@ -354,21 +369,34 @@ document.addEventListener('keyup', (event) => {
   if (event.code === 'Space' || event.code === 'Escape') return;
   if (pressedKeys.size === 0) sendCommand('정지');
 });
+window.addEventListener('blur', () => {
+  // If focus leaves the page/tab while a key is physically still held (alt-tab,
+  // clicking another window), no keyup will ever arrive for it - stop driving
+  // and clear the stuck key state rather than leaving the robot moving blind.
+  if (pressedKeys.size > 0) {
+    pressedKeys.clear();
+    document.querySelectorAll('#keypad button.k.active').forEach((btn) => btn.classList.remove('active'));
+    sendCommand('정지');
+  }
+});
 
 // On-screen buttons: touch/mouse press-and-hold behaves the same as a held key.
+// touchstart/touchend fire a synthetic mousedown/mouseup afterward for
+// compatibility on most browsers - without suppressing those, a single tap
+// sent the command twice (press, release, press, release again from the
+// synthetic pair), which is what looked like unprompted repeated command/stop
+// spam in testing on a touch-capable device.
 document.querySelectorAll('#keypad button.k').forEach((btn) => {
   const cmd = btn.dataset.cmd;
-  const press = (event) => { event.preventDefault(); btn.classList.add('active'); sendCommand(cmd); };
-  const release = (event) => {
-    event.preventDefault();
-    btn.classList.remove('active');
-    if (cmd !== '정지') sendCommand('정지');
-  };
-  btn.addEventListener('mousedown', press);
-  btn.addEventListener('touchstart', press);
-  btn.addEventListener('mouseup', release);
-  btn.addEventListener('mouseleave', release);
-  btn.addEventListener('touchend', release);
+  let touchActive = false;
+  const press = () => { btn.classList.add('active'); sendCommand(cmd); };
+  const release = () => { btn.classList.remove('active'); if (cmd !== '정지') sendCommand('정지'); };
+  btn.addEventListener('touchstart', (event) => { event.preventDefault(); touchActive = true; press(); }, {passive: false});
+  btn.addEventListener('touchend', (event) => { event.preventDefault(); touchActive = false; release(); }, {passive: false});
+  btn.addEventListener('touchcancel', (event) => { event.preventDefault(); touchActive = false; release(); }, {passive: false});
+  btn.addEventListener('mousedown', () => { if (!touchActive) press(); });
+  btn.addEventListener('mouseup', () => { if (!touchActive) release(); });
+  btn.addEventListener('mouseleave', () => { if (!touchActive) release(); });
 });
 </script>
 </body>
