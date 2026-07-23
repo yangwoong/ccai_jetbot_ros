@@ -32,14 +32,13 @@ if [ -n "${HOST_TRTEXEC}" ]; then
   "${HOST_TRTEXEC}" \
     --onnx="${MODEL_PATH}" \
     --saveEngine="${ENGINE_PATH}" \
-    --fp16 \
-    --skipInference=false
+    --fp16
 elif docker ps --format '{{.Names}}' | grep -Fxq "${CONTAINER_NAME}"; then
   echo "trtexec not found on host PATH; running inside container ${CONTAINER_NAME}"
   docker exec -w "/home/workspace/$(basename "$(pwd)")" "${CONTAINER_NAME}" bash -c "
     set -e
     TRTEXEC=\$(command -v trtexec || echo '${FALLBACK_TRTEXEC}')
-    \"\${TRTEXEC}\" --onnx='${MODEL_PATH}' --saveEngine='${ENGINE_PATH}' --fp16 --skipInference=false
+    \"\${TRTEXEC}\" --onnx='${MODEL_PATH}' --saveEngine='${ENGINE_PATH}' --fp16
   "
 else
   echo "trtexec not found on host (checked PATH and ${FALLBACK_TRTEXEC}) and container ${CONTAINER_NAME} is not running" >&2
