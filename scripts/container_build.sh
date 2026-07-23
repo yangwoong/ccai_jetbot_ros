@@ -34,8 +34,24 @@ if [ "${INSTALL_OS_DEPS}" = "1" ]; then
     i2c-tools
 fi
 
+# The container filesystem is recreated from scratch on every host_docker_run.sh
+# run (docker rm -f + docker run), so anything pip-installed inside it is wiped
+# each time. Point pip's cache at the bind-mounted repo directory so slow builds
+# (pycuda in particular, which compiles against nvcc) only pay that cost once -
+# later runs reuse the cached wheel instead of recompiling from scratch.
+export PIP_CACHE_DIR="${PIP_CACHE_DIR:-$(pwd)/.pip-cache}"
+mkdir -p "${PIP_CACHE_DIR}"
+
 python3 - <<'PY' || python3 -m pip install requests pyyaml
 import requests
 import yaml
 PY
+
+# pycuda backs the optional TensorRT YOLO path (ccai_jetbot_patrol/tensorrt_yolo.py).
+# Best-effort: vision_nav_node already falls back to OpenCV DNN/HOG if this isn't
+# available, so a failed/slow build here should never block the rest of the stack.
+python3 - <<'PY' || python3 -m pip install pycuda || echo "pycuda install failed; TensorRT YOLO path will stay disabled" >&2
+import pycuda.driver  # noqa: F401
+PY
+
 colcon build --symlink-install
