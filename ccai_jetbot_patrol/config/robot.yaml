@@ -97,6 +97,7 @@ vision_nav_node:
     obstacle_trigger_min_interval_seconds: 4.0
     floor_color_diff_threshold: 40.0
     bottom_change_threshold: 35.0
+    debug_image_enabled: true
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
     camera_alert_min_interval_seconds: 10.0

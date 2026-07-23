@@ -42,12 +42,14 @@ class WebChatNode(Node):
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
         self.create_subscription(String, "/ccai/camera_status", self.on_camera_status, 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("camera_topic").value), self.on_camera_frame, 2)
+        self.create_subscription(CompressedImage, "/ccai/vision_debug_image", self.on_vision_debug_frame, 2)
         self.messages = deque(maxlen=200)
         self.latest_status = "{}"
         self.latest_llm_status = "{}"
         self.latest_vision_status = "{}"
         self.latest_camera_status = "{}"
         self.latest_camera_frame = None
+        self.latest_vision_debug_frame = None
         self.app = self.build_app()
         self.start_server()
         self.get_logger().info("web_chat_node ready")
@@ -69,6 +71,9 @@ class WebChatNode(Node):
 
     def on_camera_frame(self, msg: CompressedImage) -> None:
         self.latest_camera_frame = bytes(msg.data)
+
+    def on_vision_debug_frame(self, msg: CompressedImage) -> None:
+        self.latest_vision_debug_frame = bytes(msg.data)
 
     def on_camera_status(self, msg: String) -> None:
         self.latest_camera_status = msg.data
@@ -116,6 +121,12 @@ class WebChatNode(Node):
                 return Response(content=EMPTY_JPEG, media_type="image/jpeg")
             return Response(content=self.latest_camera_frame, media_type="image/jpeg")
 
+        @app.get("/api/vision_debug.jpg")
+        def vision_debug_jpg():
+            if self.latest_vision_debug_frame is None:
+                return Response(content=EMPTY_JPEG, media_type="image/jpeg")
+            return Response(content=self.latest_vision_debug_frame, media_type="image/jpeg")
+
         @app.post("/api/chat")
         def chat(req: ChatRequest):
             self.messages.append({"source": "admin", "message": req.message})
@@ -152,6 +163,8 @@ class WebChatNode(Node):
                     self.send_json(node.status_payload())
                 elif self.path.startswith("/api/camera.jpg"):
                     self.send_bytes(node.latest_camera_frame or EMPTY_JPEG, "image/jpeg")
+                elif self.path.startswith("/api/vision_debug.jpg"):
+                    self.send_bytes(node.latest_vision_debug_frame or EMPTY_JPEG, "image/jpeg")
                 else:
                     self.send_error(404)
 
@@ -220,7 +233,11 @@ HTML_PAGE = """
     header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
     h1 { font-size: 24px; margin: 0; }
     #state { padding: 6px 10px; border-radius: 6px; background: #17202a; color: white; font-size: 14px; }
-    #camera { width: 320px; max-width: 100%; height: auto; border: 1px solid #d7dee8; border-radius: 8px; background: #111; display: block; margin-bottom: 12px; }
+    .cameras { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+    .cameras figure { margin: 0; }
+    .cameras img { width: 320px; max-width: 100%; height: auto; border: 1px solid #d7dee8; border-radius: 8px; background: #111; display: block; }
+    .cameras figcaption { font-size: 12px; color: #5a6572; margin-top: 4px; }
+    #visionDetail { font-size: 12px; color: #5a6572; margin: 0 0 12px; word-break: break-all; }
     #log { height: 36vh; overflow: auto; background: white; border: 1px solid #d7dee8; border-radius: 8px; padding: 16px; }
     .msg { margin: 0 0 12px; line-height: 1.45; }
     .src { font-weight: 700; margin-right: 6px; }
@@ -232,7 +249,11 @@ HTML_PAGE = """
 <body>
 <main>
   <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span><span id="cameraState">camera</span><span id="vision">vision</span><span id="llm">llm</span></header>
-  <img id="camera" src="/api/camera.jpg" alt="JetBot camera">
+  <div class="cameras">
+    <figure><img id="camera" src="/api/camera.jpg" alt="JetBot camera"><figcaption>카메라</figcaption></figure>
+    <figure><img id="visionDebug" src="/api/vision_debug.jpg" alt="Obstacle detection debug"><figcaption>장애물 감지 디버그 (노랑=엣지 영역, 하늘색=경로 앞, 파랑=바퀴 기준, 초록=YOLO)</figcaption></figure>
+  </div>
+  <p id="visionDetail">vision detail</p>
   <section id="log"></section>
   <form id="form"><input id="message" autocomplete="off" placeholder="status, patrol start, inspect entrance"><button>Send</button></form>
 </main>
@@ -243,18 +264,22 @@ const llm = document.getElementById('llm');
 const vision = document.getElementById('vision');
 const cameraState = document.getElementById('cameraState');
 const camera = document.getElementById('camera');
+const visionDebug = document.getElementById('visionDebug');
+const visionDetail = document.getElementById('visionDetail');
 async function refresh() {
   const res = await fetch('/api/status');
   const data = await res.json();
   state.textContent = data.status.state || 'unknown';
   llm.textContent = data.llm_status && data.llm_status.connected ? 'LLM online' : 'LLM offline';
   vision.textContent = data.vision_status && data.vision_status.state ? data.vision_status.state : 'vision unknown';
+  visionDetail.textContent = data.vision_status && data.vision_status.detail ? data.vision_status.detail : '';
   cameraState.textContent = data.camera_status && data.camera_status.backend ? `${data.camera_status.backend} ${data.camera_status.last_error || 'ok'}` : 'camera unknown';
   log.innerHTML = data.messages.map(m => `<p class="msg"><span class="src">${m.source}</span>${m.message}</p>`).join('');
   log.scrollTop = log.scrollHeight;
 }
 function refreshCamera() {
   camera.src = '/api/camera.jpg?t=' + Date.now();
+  visionDebug.src = '/api/vision_debug.jpg?t=' + Date.now();
 }
 document.getElementById('form').addEventListener('submit', async (event) => {
   event.preventDefault();

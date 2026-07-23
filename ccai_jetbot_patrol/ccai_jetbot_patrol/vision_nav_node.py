@@ -65,6 +65,7 @@ class VisionNavNode(Node):
         self.declare_parameter("speed_ramp_seconds", 1.5)
         self.declare_parameter("speed_ramp_min_factor", 0.35)
         self.declare_parameter("camera_alert_min_interval_seconds", 10.0)
+        self.declare_parameter("debug_image_enabled", True)
 
         self.cv2 = None
         self.np = None
@@ -82,11 +83,15 @@ class VisionNavNode(Node):
         self.event_throttle_at = {}
         self.yolo_cuda_fallback_tried = False
         self.prev_bottom_mean = None
+        self.last_color_distance = 0.0
+        self.last_bottom_change = 0.0
+        self.last_edge_obstacle_density = 0.0
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
+        self.debug_image_pub = self.create_publisher(CompressedImage, "/ccai/vision_debug_image", 2)
         self.create_subscription(CompressedImage, str(self.get_parameter("image_topic").value), self.on_image, 2)
         self.create_subscription(String, "/ccai/status", self.on_robot_status, 10)
         self.create_timer(0.5, self.watchdog)
@@ -215,6 +220,7 @@ class VisionNavNode(Node):
         center_density = self.region_density(edges[:, third : 2 * third])
         right_density = self.region_density(edges[:, 2 * third :])
         obstacle_density = self.region_density(edges[int(edges.shape[0] * 0.55) :, third : 2 * third])
+        self.last_edge_obstacle_density = obstacle_density
 
         twist = Twist()
         stop_threshold = float(self.get_parameter("obstacle_stop_edge_density").value)
@@ -235,6 +241,7 @@ class VisionNavNode(Node):
             detail = "yolo obstacle: {0} area={1:.3f}".format(yolo_obstacle[0], yolo_obstacle[1])
             self.maybe_trigger_vlm(detail)
             self.forward_streak_started_at = 0.0
+            self.publish_debug_frame(frame, True, detail)
             return twist, detail
 
         if obstacle_density > stop_threshold or color_obstacle or sudden_change:
@@ -244,6 +251,7 @@ class VisionNavNode(Node):
             )
             self.maybe_trigger_vlm(detail)
             self.forward_streak_started_at = 0.0
+            self.publish_debug_frame(frame, True, detail)
             return twist, detail
 
         # Steer away from visual clutter. Lower edge density is treated as clearer floor/path.
@@ -263,6 +271,7 @@ class VisionNavNode(Node):
         detail = "path left={0:.3f}, center={1:.3f}, right={2:.3f}, steer={3:.2f}, ramp={4:.2f}".format(
             left_density, center_density, right_density, steer, ramp_factor
         )
+        self.publish_debug_frame(frame, False, detail)
         return twist, detail
 
     def detect_floor_color_obstacle(self, frame) -> bool:
@@ -284,6 +293,7 @@ class VisionNavNode(Node):
         reference_mean = reference.reshape(-1, 3).mean(axis=0)
         path_mean = path_ahead.reshape(-1, 3).mean(axis=0)
         color_distance = float(self.np.linalg.norm(reference_mean - path_mean))
+        self.last_color_distance = color_distance
         threshold = float(self.get_parameter("floor_color_diff_threshold").value)
         return color_distance > threshold
 
@@ -308,8 +318,53 @@ class VisionNavNode(Node):
             return False
 
         change = float(self.np.linalg.norm(current_mean - previous_mean))
+        self.last_bottom_change = change
         threshold = float(self.get_parameter("bottom_change_threshold").value)
         return change > threshold
+
+    def publish_debug_frame(self, frame, is_obstacle: bool, detail: str) -> None:
+        """Draw what the obstacle detector is looking at directly onto the camera
+        frame and publish it, so an admin can watch in the web UI whether a real
+        obstacle is being recognized instead of only seeing the raw camera feed.
+        Never let a drawing bug take down the vision pipeline - this is purely
+        a debug aid.
+        """
+        if not bool(self.get_parameter("debug_image_enabled").value):
+            return
+        try:
+            debug = frame.copy()
+            height, width = debug.shape[:2]
+            third = width // 3
+
+            edge_y0 = int(height * 0.52) + int((height - int(height * 0.52)) * 0.55)
+            self.cv2.rectangle(debug, (third, edge_y0), (2 * third, height), (0, 255, 255), 1)
+            self.cv2.rectangle(debug, (third, int(height * 0.60)), (2 * third, int(height * 0.85)), (255, 255, 0), 1)
+            self.cv2.rectangle(debug, (third, int(height * 0.90)), (2 * third, height), (255, 0, 0), 1)
+
+            for class_id, confidence, x, y, w, h in self.last_detections:
+                class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else "obj"
+                self.cv2.rectangle(debug, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                self.cv2.putText(
+                    debug, "{0} {1:.2f}".format(class_name, confidence), (x, max(y - 5, 10)),
+                    self.cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1,
+                )
+
+            status_text = "OBSTACLE" if is_obstacle else "CLEAR"
+            status_color = (0, 0, 255) if is_obstacle else (0, 200, 0)
+            self.cv2.putText(debug, status_text, (5, 15), self.cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2)
+            metrics = "edge={0:.3f} color={1:.1f} sudden={2:.1f}".format(
+                self.last_edge_obstacle_density, self.last_color_distance, self.last_bottom_change
+            )
+            self.cv2.putText(debug, metrics, (5, height - 8), self.cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+
+            ok, encoded = self.cv2.imencode(".jpg", debug, [int(self.cv2.IMWRITE_JPEG_QUALITY), 60])
+            if ok:
+                msg = CompressedImage()
+                msg.format = "jpeg"
+                msg.data = encoded.tobytes()
+                self.debug_image_pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().debug("debug frame draw failed: {0}".format(exc))
 
     def detect_path_obstacle(self, frame):
         """Return (class_name, area_fraction) if a YOLO detection blocks the drivable path ahead."""
