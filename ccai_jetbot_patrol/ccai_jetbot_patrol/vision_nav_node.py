@@ -41,6 +41,14 @@ class VisionNavNode(Node):
     def __init__(self) -> None:
         super().__init__("vision_nav_node")
         self.declare_parameter("enabled", True)
+        # When a D435i is connected and depth_nav_node is driving instead (see
+        # depth_nav_node.py), set this false: the CSI camera is ceiling-mounted
+        # for object recognition only in that setup and its floor-facing
+        # obstacle heuristics (edge density / floor color / frame-change) are
+        # meaningless pointed at a ceiling. YOLO detection, follow-person, and
+        # the debug overlay keep working either way - only the patrol/manual
+        # forward *driving* contribution is gated off.
+        self.declare_parameter("drive_enabled", True)
         self.declare_parameter("image_topic", "/image_raw/compressed")
         self.declare_parameter("linear_speed", 0.045)
         self.declare_parameter("turn_speed", 0.16)
@@ -194,7 +202,9 @@ class VisionNavNode(Node):
         if not bool(self.get_parameter("enabled").value) or self.cv2 is None:
             return
         frame = self.decode_frame(msg.data)
-        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = bool(self.get_parameter("drive_enabled").value) and (
+            self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        )
         if frame is None or self.is_invalid_frame(frame):
             self.publish_status("invalid_camera", stop=True)
             self.publish_stop()
@@ -768,7 +778,9 @@ class VisionNavNode(Node):
         return best
 
     def watchdog(self) -> None:
-        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = bool(self.get_parameter("drive_enabled").value) and (
+            self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        )
         if not (drives_forward or self.mode == "following_person"):
             return
         timeout = float(self.get_parameter("min_valid_frame_seconds").value)

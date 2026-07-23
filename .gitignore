@@ -10,4 +10,5 @@ data/*
 data/models/*
 !data/models/*.onnx
 .env
+deps/
 

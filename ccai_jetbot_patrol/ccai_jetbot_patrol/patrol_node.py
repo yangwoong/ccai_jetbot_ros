@@ -141,6 +141,13 @@ class PatrolNode(Node):
     def start_replay(self, label: str, question: str) -> None:
         steps = self.location_store.get(label)
         if not steps:
+            # This label was quick-saved (visual features only, no '기억 시작'
+            # recording - see save_recorded_location) so there's no route to
+            # drive there. Inspect from here instead, but say so explicitly
+            # rather than silently dropping the location name.
+            self.publish_event(
+                f"location '{label}' has no travel path (visual-only save) - inspecting from current position instead"
+            )
             self.start_inspect("", question)
             return
         self.replay_steps = steps
@@ -237,6 +244,14 @@ class PatrolNode(Node):
             prefix = f"{self.pending_analysis_location}: " if self.pending_analysis_location else ""
             self.pending_analysis_location = ""
             self.publish_event(f"analysis result: {prefix}{summary[:180]}")
+            if self.state == PatrolState.INSPECTING:
+                # INSPECTING had no exit condition at all - once here (e.g. a
+                # location with no travel path falling back to "inspect from
+                # here"), the robot would rotate in place forever, since
+                # nothing ever moved it out of this state. Stop as soon as the
+                # single snapshot this state exists to capture is in hand.
+                self.set_state(PatrolState.STOPPED)
+                self.stop_motion()
         elif risk and self.state in {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON, PatrolState.INSPECTING}:
             self.publish_event(f"attention required: {summary[:180]}")
 
@@ -321,7 +336,12 @@ class PatrolNode(Node):
             else:
                 twist.angular.z = angular_speed
         elif self.state == PatrolState.INSPECTING:
-            twist.angular.z = angular_speed
+            # Hold still - a single VLM snapshot is captured whenever the next
+            # frame arrives (see request_analysis/vlm_client_node), so rotating
+            # here doesn't help it see more and previously had no exit
+            # condition at all (see on_vlm_observation for where this now
+            # actually ends).
+            pass
         elif self.state == PatrolState.RETURNING_HOME:
             twist.linear.x = linear_speed * 0.7
             twist.angular.z = angular_speed * 0.25

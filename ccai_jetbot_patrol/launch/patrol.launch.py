@@ -91,6 +91,8 @@ def generate_launch_description():
         nodes.append(Node(package="ccai_jetbot_patrol", executable="camera_node", name="camera_node", parameters=[config, camera_parameters()], output="screen"))
     if env_enabled("CCAI_ENABLE_VISION", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="vision_nav_node", name="vision_nav_node", parameters=[config], output="screen"))
+    if env_enabled("CCAI_ENABLE_DEPTH_NAV", False):
+        nodes.append(Node(package="ccai_jetbot_patrol", executable="depth_nav_node", name="depth_nav_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_PATROL", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="patrol_node", name="patrol_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_VLM", True):

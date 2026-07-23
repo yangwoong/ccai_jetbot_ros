@@ -31,7 +31,8 @@ if [ "${INSTALL_OS_DEPS}" = "1" ]; then
     python3-pil \
     python3-smbus \
     v4l-utils \
-    i2c-tools
+    i2c-tools \
+    ros-humble-cv-bridge
 fi
 
 # The container filesystem is recreated from scratch on every host_docker_run.sh

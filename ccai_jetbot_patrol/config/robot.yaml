@@ -76,6 +76,11 @@ camera_node:
 vision_nav_node:
   ros__parameters:
     enabled: true
+    # Flip to false once a D435i is connected and depth_nav_node (below) is
+    # enabled to drive instead - CSI stays on for YOLO/follow-person/debug
+    # overlay, it just stops contributing patrol/manual-forward drive
+    # commands. See depth_nav_node's docstring and docs/navigation_roadmap.md.
+    drive_enabled: true
     image_topic: "/image_raw/compressed"
     linear_speed: 0.045
     turn_speed: 0.16
@@ -105,6 +110,31 @@ vision_nav_node:
     obstacle_avoidance_max_seconds: 6.0
     obstacle_turn_pulse_seconds: 0.3
     obstacle_pause_seconds: 0.2
+    speed_ramp_seconds: 1.5
+    speed_ramp_min_factor: 0.35
+    camera_alert_min_interval_seconds: 10.0
+
+depth_nav_node:
+  ros__parameters:
+    # Set true (and CCAI_ENABLE_DEPTH_NAV=1 at launch) once a forward-facing
+    # D435i is connected. Remember to set vision_nav_node.drive_enabled: false
+    # above at the same time. See depth_nav_node.py's docstring.
+    enabled: false
+    depth_image_topic: "/camera/camera/depth/image_rect_raw"
+    depth_scale_to_meters: 0.001
+    min_valid_depth_m: 0.2
+    max_valid_depth_m: 4.0
+    linear_speed: 0.045
+    turn_speed: 0.16
+    max_angular_speed: 0.22
+    obstacle_stop_distance_m: 0.45
+    min_valid_frame_seconds: 1.0
+    obstacle_avoidance_hold_seconds: 1.0
+    obstacle_clear_confirm_frames: 5
+    obstacle_avoidance_max_seconds: 6.0
+    obstacle_turn_pulse_seconds: 0.3
+    obstacle_pause_seconds: 0.2
+    steer_smoothing_alpha: 0.4
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
     camera_alert_min_interval_seconds: 10.0

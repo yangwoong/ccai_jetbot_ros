@@ -60,6 +60,22 @@
 - **D435i**(RGB + 실측 깊이 + IMU)는 **장애물 회피 문제 자체에 맞는 센서입니다.** 지금 쓰는 엣지 밀도/바닥색 대비/YOLO 조합은 전부 깊이 센서가 없어서 어쩔 수 없이 쓰는 시각적 우회 추정입니다. 실제 거리를 픽셀 단위로 재는 D435i가 있으면 텍스처/색과 무관하게 훨씬 안정적으로 장애물을 감지할 수 있습니다.
 - 현재 방침: 모노 카메라 기반 방식(엣지 밀도 + YOLO + 바닥색 대비 + 프레임 급변, [docs/vision_and_alerts.md](vision_and_alerts.md) 참고)을 먼저 안정화 시도하고, 그래도 충돌이 반복되면 D435i 도입을 권장합니다. T265는 회피 문제와는 별개로, 나중에 3단계(지도 생성)를 진행할 때 다시 고려 대상입니다.
 
+## D435i 도입 (2026-07-23 ~): 실측 깊이 기반 장애물 회피 + CSI 카메라 역할 재정의
+
+모노 카메라 방식을 계속 안정화해봤지만 결국 실측 깊이 센서 도입을 결정했습니다. 동시에 CSI 카메라는 천장을 보도록 마운트를 바꾸고 객체 인식 전용으로만 씁니다(바닥을 볼 수 없으니 장애물 회피용 프록시 신호들은 더 이상 의미가 없음). 아래는 이번에 구현한 것과, 앞으로 남은 것을 구분해서 기록합니다.
+
+### 이번에 구현한 것
+
+- **`scripts/install_realsense_d435i.sh`**: librealsense2를 소스에서 빌드(Jetson은 arm64 apt 패키지가 없고, `-DFORCE_RSUSB_BACKEND=true`로 커널 UVC 드라이버 패치 없이 유저스페이스 백엔드로 빌드 — Jetson 공식 권장 방식)하고, `realsense-ros`(ROS2 래퍼)도 소스로 빌드합니다(`.deb`가 존재하지 않는 arm64 `librealsense2` apt 패키지에 의존하므로 apt 설치는 의존성 해결이 안 됨). udev 규칙도 설치합니다. 컨테이너 안에서 `container_build.sh`와 같은 위치에서 실행합니다. **주의**: 스크립트 안의 태그/브랜치 이름(`REALSENSE_TAG`, `REALSENSE_ROS_BRANCH`)은 이 환경에서 실시간 검증된 값이 아닙니다 — 클론이 실패하면 [librealsense releases](https://github.com/IntelRealSense/librealsense/releases)와 [realsense-ros](https://github.com/IntelRealSense/realsense-ros) 저장소에서 현재 태그/브랜치를 확인하고 환경변수로 지정해서 재실행하세요.
+- **`depth_nav_node`** (새 노드, `ccai_jetbot_patrol/depth_nav_node.py`): D435i의 실측 깊이 이미지(`depth_image_topic`, 기본 `/camera/camera/depth/image_rect_raw`)를 받아 전방을 좌/중/우 3분할로 나눠 중앙값 거리를 계산합니다. 중앙 거리가 `obstacle_stop_distance_m`(기본 0.45m)보다 가까우면 장애물로 판정합니다. CSI 버전에서 검증된 상태 머신(방향 커밋-유지, 클리어 확인 프레임, 스터터 턴, 최대 회피 시간 상한 — [docs/vision_and_alerts.md](vision_and_alerts.md) §9)을 그대로 재사용하되, 신호 자체가 실측 거리라서 텍스처/색/조명에 흔들리지 않습니다. 장애물이 없을 때는 좌우 중 더 열린(거리가 먼) 쪽으로 조향하는 "열린 공간 추종" 방식으로 순찰 중 자율 주행을 시도합니다. `patrol_node`가 이미 쓰는 `/ccai/vision_cmd_vel`/`/ccai/vision_status` 토픽에 그대로 발행하므로 `patrol_node`는 수정할 필요가 없습니다 — CSI용 `vision_nav_node`와 이 노드 둘 다 같은 토픽에 발행할 수 있는 구조라, 아래처럼 하나만 활성화합니다.
+- **`vision_nav_node.drive_enabled`** 파라미터(기본 `true`): `false`로 두면 CSI 카메라는 YOLO 객체 인식/사람 따라가기/디버그 오버레이는 계속하되, 순찰/수동전진 시 주행 명령(`/ccai/vision_cmd_vel`) 발행은 멈춥니다. D435i가 연결되면 이 값을 `false`로, `depth_nav_node.enabled`를 `true`로 맞춰서 "CSI=객체인식 전용, D435i=주행" 역할 분리를 완성합니다.
+- 기본값(D435i 미연결 상태)은 `depth_nav_node.enabled: false`, `vision_nav_node.drive_enabled: true`라서 **아무것도 바꾸지 않으면 기존 CSI+YOLO 순찰 동작이 그대로 유지**됩니다 — 이번 요청의 "기존 기능은 문제없도록 유지" 조건을 만족합니다.
+
+### 아직 안 된 것 (다음 단계)
+
+- **진짜 SLAM/점유 격자 지도**: 이번 구현은 어디까지나 "가까우면 피하고, 열린 쪽으로 간다"는 반응형(reactive) 주행입니다. 오도메트리나 지도가 없어서 "이 방을 다 돌아봤다", "특정 좌표로 가라" 같은 진짜 내비게이션은 아직 안 됩니다. 현실적인 다음 단계는 `rtabmap_ros`(RGB-D 카메라만으로 시각 오도메트리 + SLAM 지도 작성이 가능 — 휠 인코더 불필요)를 D435i 데이터로 돌리고, 그 위에 `nav2` 스택(costmap, 경로 계획, 컨트롤러)을 얹는 것입니다. 이건 별도의 큰 작업이라 이번에는 포함하지 않았고, 위 설치 스크립트가 librealsense/realsense-ros를 먼저 준비해두는 선행 작업 역할을 합니다.
+- **자동 지역 탐색/라벨링과의 통합**: 2단계(지역 탐색·라벨링)는 여전히 관리자가 수동으로 가르치는 teach-and-repeat 방식입니다. `rtabmap_ros` 지도가 생기면 그 좌표계 위에 라벨을 앉히는 방식으로 재설계할 수 있습니다.
+
 ## 관련 문서
 
 - 현재 구현된 YOLO 자율 주행/따라가기, VLM 위험 알림, 카메라 지연 수정 등은 [docs/vision_and_alerts.md](vision_and_alerts.md)에 정리되어 있습니다.
