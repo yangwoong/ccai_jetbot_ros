@@ -9,6 +9,17 @@
 도커:   /home/workspace/ccai_jetbot_ros
 ```
 
+## 스크립트 역할 정리 (최신)
+
+| 스크립트 | 실행 위치 | 역할 |
+|---|---|---|
+| `scripts/host_docker_run.sh` | 호스트 | **컨테이너를 새로 만들어 실행**(최초 실행/설정 변경 시). 기존 컨테이너를 `docker rm -f`로 지우고 `docker run`으로 재생성하므로, 새 `CCAI_ENABLE_*` 환경변수나 디바이스 마운트를 적용하려면 반드시 이 스크립트를 다시 실행해야 함 (`docker restart`로는 반영 안 됨). |
+| `scripts/container_run_patrol.sh` | 컨테이너 안 | `host_docker_run.sh`가 만든 컨테이너의 실제 foreground 프로세스(`docker run`의 `bash -c` 인자로 지정됨). RMW 설정, `FORCE_BUILD_ON_RUN`에 따른 빌드, `ros2 launch ccai_jetbot_patrol patrol.launch.py` 실행을 담당. 직접 실행할 일은 거의 없음(호스트에서는 `host_docker_run.sh`만 실행). |
+| `scripts/host_docker_update.sh` | 호스트 | **기존 컨테이너를 그대로 두고 코드만 최신화**(`git pull` → 컨테이너 안에서 재빌드 → `docker restart`). 컨테이너를 재생성하지 않으므로 `CCAI_ENABLE_*` 등 `docker run` 시점 설정은 바뀌지 않음 — 그런 설정을 바꾸려면 `host_docker_run.sh`를 다시 실행해야 함. |
+| `scripts/container_build.sh` | 컨테이너 안 | 실제 colcon 빌드 수행. `container_run_patrol.sh`/`host_docker_update.sh` 양쪽에서 호출됨. |
+
+**주의**: 과거에 존재했던 `scripts/run_patrol.sh`(호스트/컨테이너 어디서도 참조되지 않던 `container_run_patrol.sh`의 오래된 중복본, 빌드 단계 누락)는 삭제했습니다 — 실행은 항상 `host_docker_run.sh`(신규 컨테이너) 또는 `host_docker_update.sh`(기존 컨테이너 갱신) 둘 중 하나로만 하면 됩니다.
+
 ## 1. 최초 실행
 
 호스트에서 실행합니다.
