@@ -84,11 +84,24 @@ apt-get install -y \
 
 if pkg-config --exists realsense2 2>/dev/null; then
   echo "[ccai] librealsense2 already installed ($(pkg-config --modversion realsense2)), skipping build"
+  # Still needed even when skipping the build below - see the explanation at
+  # the other touch of this file a few lines down.
+  [ -d "${DEPS_DIR}/librealsense" ] && touch "${DEPS_DIR}/librealsense/COLCON_IGNORE"
 else
   if [ ! -d "${DEPS_DIR}/librealsense" ]; then
     echo "[ccai] Cloning librealsense (${REALSENSE_TAG})"
     git clone --depth 1 --branch "${REALSENSE_TAG}" https://github.com/IntelRealSense/librealsense.git "${DEPS_DIR}/librealsense"
   fi
+  # librealsense's own repo has a top-level CMakeLists.txt, which makes colcon
+  # (run later for realsense-ros, and by container_build.sh on every rebuild)
+  # mistake it for a colcon package and try to build it *again* itself with
+  # colcon's own default cmake options (examples included, none of our
+  # -DFORCE_RSUSB_BACKEND/-DBUILD_EXAMPLES=false flags below) - wasted time at
+  # best, and it can fail outright (e.g. "file not recognized: File
+  # truncated" building the bundled example apps we don't need). We already
+  # build+install librealsense2 ourselves right below via plain cmake, so
+  # colcon has no reason to touch this directory at all.
+  touch "${DEPS_DIR}/librealsense/COLCON_IGNORE"
   echo "[ccai] Building librealsense2 with the RSUSB backend (no kernel patch needed) - this is slow on Jetson, expect 30-60+ minutes"
   cmake -S "${DEPS_DIR}/librealsense" -B "${DEPS_DIR}/librealsense/build" \
     -DFORCE_RSUSB_BACKEND=true \
