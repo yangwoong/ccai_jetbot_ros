@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain>
+    <Discovery>
+      <!--
+        Default CycloneDDS discovery probes a small, fixed pool of
+        sequential "participant index" slots (used to derive a UDP port per
+        participant) - reused across every ROS2 process on the domain.
+        Bind-mounting all of /tmp into the container (needed for the CSI
+        camera's Argus socket - see host_docker_run.sh) means CycloneDDS's
+        own state under /tmp survives container recreation too, and this
+        project's containers get recreated/killed abruptly a lot during
+        development (docker rm -f, crashes). Stale entries piled up until
+        the slot pool was exhausted, and a node created after that point
+        (here: web_chat_node) failed outright with "Failed to find a free
+        participant index for domain 0" - the whole robot ran except the
+        web UI, with no obvious link between the two.
+
+        "none" switches to OS-assigned ephemeral ports instead of the
+        sequential index scheme, sidestepping this class of failure
+        entirely rather than needing to periodically clear stale state.
+      -->
+      <ParticipantIndex>none</ParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>

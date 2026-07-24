@@ -11,6 +11,13 @@ if [ -f .env ]; then
 fi
 
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
+# See ccai_jetbot_patrol/config/cyclonedds.xml for why this is needed - avoids
+# CycloneDDS's sequential participant-index port allocation, whose stale
+# state (persisted because /tmp is bind-mounted for the CSI camera) can be
+# exhausted after enough container restarts and start silently killing new
+# nodes (symptom seen: web_chat_node dying with "Failed to find a free
+# participant index for domain 0", robot otherwise running fine).
+export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$(pwd)/ccai_jetbot_patrol/config/cyclonedds.xml}"
 
 if [ -f /opt/ros/humble/setup.bash ]; then
   set +u
