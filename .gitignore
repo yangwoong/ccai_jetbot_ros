@@ -11,4 +11,5 @@ data/models/*
 !data/models/*.onnx
 .env
 deps/
+install_realsense_d435i.log
 

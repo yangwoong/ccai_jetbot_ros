@@ -36,12 +36,26 @@ set -euo pipefail
 #   scripts/install_realsense_d435i.sh
 # A dropped `docker exec -it` session (SSH disconnect, terminal closed) also
 # kills the build since it's the session's foreground process - run it
-# detached so it survives that, e.g.:
+# detached so it survives that:
 #   docker exec -d ccai-jetbot bash -c \
-#     "cd /home/workspace/ccai_jetbot_ros && ./scripts/install_realsense_d435i.sh > /tmp/realsense_install.log 2>&1"
-# then check progress with: docker exec ccai-jetbot tail -f /tmp/realsense_install.log
+#     "cd /home/workspace/ccai_jetbot_ros && ./scripts/install_realsense_d435i.sh"
+# The script logs to install_realsense_d435i.log in the repo root itself (see
+# LOG_FILE below) - that's bind-mounted, so check progress straight from the
+# HOST, no docker exec needed, and it survives even if the container crashes
+# or gets recreated:
+#   tail -f install_realsense_d435i.log
 
 cd "$(dirname "$0")/.."
+
+# Self-log to a file inside the bind-mounted repo (not /tmp - /tmp lives only
+# inside the container's writable layer, so it's gone the moment the
+# container is recreated, e.g. via host_docker_run.sh - which is exactly what
+# ate the previous run's log). This path is visible from the HOST too, so it
+# can be checked with a plain `cat`/`tail`, no docker exec needed, even after
+# a crash that takes the container down with it.
+LOG_FILE="${LOG_FILE:-$(pwd)/install_realsense_d435i.log}"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "[ccai] logging to ${LOG_FILE} (host path: $(pwd)/install_realsense_d435i.log under the bind-mounted repo)"
 
 REALSENSE_TAG="${REALSENSE_TAG:-master}"
 REALSENSE_ROS_BRANCH="${REALSENSE_ROS_BRANCH:-ros2-master}"
