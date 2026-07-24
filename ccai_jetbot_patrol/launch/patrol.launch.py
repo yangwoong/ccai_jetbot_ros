@@ -117,7 +117,15 @@ def generate_launch_description():
                     "enable_infra2": "false",
                     "enable_gyro": "false",
                     "enable_accel": "false",
-                    "depth_module.profile": "640x480x30",
+                    # NOTE: the parameter is "depth_profile", not "profile" -
+                    # every log so far printed "Parameter 'depth_module.profile'
+                    # is not supported" and silently ignored it, so depth was
+                    # actually running at the sensor's default 848x480 this
+                    # whole time instead of the requested 640x480 - almost
+                    # certainly part of why the D435i started throwing
+                    # "USB CAM/SCP overflow" hardware errors once both cameras
+                    # (CSI + D435i) were running at once.
+                    "depth_module.depth_profile": "640x480x30",
                     "rgb_camera.color_profile": "640x480x30",
                     # Only turned on for Nav2's costmap obstacle layer (see
                     # config/nav2_params.yaml, which reads
