@@ -60,6 +60,12 @@ class VisualOdomNode(Node):
         self.declare_parameter("max_reprojection_error_m", 0.15)
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_link")
+        # ORB detect+compute + BFMatcher + SVD on every 640x480 frame at 30fps
+        # is too much for a Jetson Nano's CPU alongside camera_node/vision_nav_node/
+        # depth_nav_node all running at once - process only every Nth color frame
+        # to keep this from starving the rest of the stack (symptom otherwise:
+        # web debug images freeze/stall system-wide, not just this node).
+        self.declare_parameter("process_every_n_frames", 3)
         # Empirically flip to -1.0 if real left/right turns or forward moves
         # come out backwards once tested on the actual robot - see the
         # class docstring's note on camera-to-robot axis mapping being a
@@ -77,6 +83,7 @@ class VisualOdomNode(Node):
         self.prev_keypoints = None
         self.prev_descriptors = None
         self.prev_depth = None
+        self.color_frame_count = 0
         self.x = 0.0
         self.y = 0.0
         self.yaw = 0.0
@@ -136,6 +143,10 @@ class VisualOdomNode(Node):
 
     def on_color(self, msg: Image) -> None:
         if self.camera_info is None or not hasattr(self, "latest_depth_frame"):
+            return
+        self.color_frame_count += 1
+        every_n = max(int(self.get_parameter("process_every_n_frames").value), 1)
+        if self.color_frame_count % every_n != 0:
             return
         try:
             frame = self.decode_image(msg)

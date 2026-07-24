@@ -46,6 +46,10 @@ visual_odom_node:
     max_reprojection_error_m: 0.15
     odom_frame: "odom"
     base_frame: "base_link"
+    # ORB+Kabsch on every 30fps frame is too much CPU for a Jetson Nano
+    # running the rest of the stack at the same time - process every 3rd
+    # color frame (effectively ~10fps odometry) instead.
+    process_every_n_frames: 3
     # Camera-optical-frame -> robot-planar-frame axis mapping is unverified
     # on real hardware - flip to -1.0 if motion comes out backwards/mirrored
     # once tested (see visual_odom_node.py's docstring).
