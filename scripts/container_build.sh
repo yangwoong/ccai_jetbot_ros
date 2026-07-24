@@ -61,10 +61,35 @@ PY
 
 # pycuda backs the optional TensorRT YOLO path (ccai_jetbot_patrol/tensorrt_yolo.py).
 # Best-effort: vision_nav_node already falls back to OpenCV DNN/HOG if this isn't
-# available, so a failed/slow build here should never block the rest of the stack.
-python3 - <<'PY' || python3 -m pip install pycuda || echo "pycuda install failed; TensorRT YOLO path will stay disabled" >&2
+# available. In practice a failing build here was NOT harmless: no prebuilt
+# wheel exists for this platform, so pip falls back to a from-source build
+# that pulls in numpy as a build dependency, which failed here with
+# "xlocale.h: No such file or directory" (older numpy vs. newer glibc) - pip
+# then retried several numpy versions in a row before giving up, taking many
+# minutes, and since nothing here remembered the failure, this repeated in
+# full on *every single container start* (FORCE_BUILD_ON_RUN=1 by default),
+# delaying the whole stack - including web_chat_node - by that much every
+# time. Now: capped with `timeout` so one attempt can't run indefinitely, and
+# a failure is remembered in a marker file on the bind-mounted side so it's
+# not retried on every future start. Delete the marker (or fix the
+# xlocale.h issue - a symlink to locale.h is the usual workaround) to retry.
+PYCUDA_FAIL_MARKER="${PIP_CACHE_DIR}/pycuda_build_failed"
+if python3 - <<'PY' 2>/dev/null
 import pycuda.driver  # noqa: F401
 PY
+then
+  : # already importable, nothing to do
+elif [ -f "${PYCUDA_FAIL_MARKER}" ]; then
+  echo "[ccai] skipping pycuda build - a previous attempt failed (marker: ${PYCUDA_FAIL_MARKER}). TensorRT YOLO path stays disabled; OpenCV DNN/HOG fallback is used instead. Delete that file to retry." >&2
+else
+  echo "[ccai] attempting pycuda install (capped at ${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}s)"
+  if timeout "${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}" python3 -m pip install pycuda; then
+    echo "[ccai] pycuda installed"
+  else
+    echo "[ccai] pycuda install failed or timed out; TensorRT YOLO path will stay disabled (OpenCV DNN/HOG fallback used instead). Won't retry on future starts - delete ${PYCUDA_FAIL_MARKER} to retry." >&2
+    touch "${PYCUDA_FAIL_MARKER}"
+  fi
+fi
 
 # A failure in ANY discovered package (e.g. an optional/experimental
 # dependency like realsense-ros, or one of its own dependencies) used to kill
