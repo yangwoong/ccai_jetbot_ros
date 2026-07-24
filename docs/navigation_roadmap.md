@@ -78,8 +78,41 @@
 
 ### 아직 안 된 것 (다음 단계)
 
-- **진짜 SLAM/점유 격자 지도**: 이번 구현은 어디까지나 "가까우면 피하고, 열린 쪽으로 간다"는 반응형(reactive) 주행입니다. 오도메트리나 지도가 없어서 "이 방을 다 돌아봤다", "특정 좌표로 가라" 같은 진짜 내비게이션은 아직 안 됩니다. 현실적인 다음 단계는 `rtabmap_ros`(RGB-D 카메라만으로 시각 오도메트리 + SLAM 지도 작성이 가능 — 휠 인코더 불필요)를 D435i 데이터로 돌리고, 그 위에 `nav2` 스택(costmap, 경로 계획, 컨트롤러)을 얹는 것입니다. 이건 별도의 큰 작업이라 이번에는 포함하지 않았고, 위 설치 스크립트가 librealsense/realsense-ros를 먼저 준비해두는 선행 작업 역할을 합니다.
-- **자동 지역 탐색/라벨링과의 통합**: 2단계(지역 탐색·라벨링)는 여전히 관리자가 수동으로 가르치는 teach-and-repeat 방식입니다. `rtabmap_ros` 지도가 생기면 그 좌표계 위에 라벨을 앉히는 방식으로 재설계할 수 있습니다.
+- **자동 지역 탐색/라벨링과의 통합**: SLAM 지도가 안정적으로 검증되면, 지금은 시각 특징/타이밍 기반인 위치 저장을 그 좌표계 위에 앉히는 방식으로 재설계할 수 있습니다.
+
+## SLAM/Nav2 (2026-07-24 ~, 실험적 — 아직 이 하드웨어에서 검증 안 됨)
+
+사용자 요청으로 `rtabmap_ros`(RGB-D SLAM) + `nav2`(경로 계획/주행) 연동의 뼈대를 추가했습니다. **중요: 이건 반응형 `depth_nav_node` 순찰(위 §)을 대체하는 게 아니라 그 위에 얹는 별도의 실험적 기능이고, 기본값은 꺼져 있어서(`CCAI_ENABLE_SLAM=0`, `CCAI_ENABLE_NAV2=0`) 아무것도 안 건드리는 한 기존 동작에 영향이 없습니다.**
+
+### 왜 아직 "완성"이 아닌지 솔직하게
+
+- **패키지 설치 여부 자체가 미확인**: 이 이미지는 ROS2 Humble을 bionic에 백포트한 커스텀 조합이라, `xacro`/`diagnostic_updater`처럼 흔한 패키지도 apt에 없었던 전례가 있습니다(`docs/vision_and_alerts.md` §21 참고). `rtabmap_ros`/`nav2`는 각각 수십 개 패키지짜리 큰 스택이라, apt에 없을 경우 그 전부를 자동으로 소스 빌드하는 건 현실적이지 않습니다 — `scripts/install_slam_nav2.sh`가 apt 설치를 시도하고 뭐가 없는지 정확히 보고하도록만 만들었고, 없는 패키지가 나오면 그때부터 하나씩(xacro/diagnostic_updater 때와 같은 방식으로) 대응해야 합니다.
+- **오도메트리가 시각 오도메트리뿐**: 휠 인코더가 없어서 rtabmap의 RGB-D 시각 오도메트리에만 의존합니다. 텍스처가 적은 바닥/조명 변화에서 드리프트가 클 수 있습니다.
+- **`nav2_params.yaml`은 튜닝 전 시작점**: `ccai_jetbot_patrol/config/nav2_params.yaml`은 이 로봇의 대략적인 크기/속도(반경 0.12m, 최대 속도 0.06m/s)로 채운 합리적인 초기값이지, 실기 테스트로 검증된 값이 아닙니다.
+- **런치 인자 이름 미검증**: `patrol.launch.py`의 `rtabmap_launch`/`nav2_bringup` include에 쓴 인자 이름(`depth_topic`, `visual_odometry` 등)은 rtabmap_ros의 일반적인 관례를 따랐지만, 실제 설치된 버전에 따라 이름이 다를 수 있습니다.
+
+### 설치 및 활성화 절차
+
+```bash
+docker exec -it ccai-jetbot bash -c "cd /home/workspace/ccai_jetbot_ros && ./scripts/install_slam_nav2.sh"
+```
+
+- 성공하면 (`CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1 ./scripts/host_docker_run.sh`)로 컨테이너를 재생성해서 rtabmap+nav2를 활성화할 수 있습니다.
+- 실패(일부 패키지 apt에 없음)하면 로그를 그대로 공유해 주세요 — 어떤 패키지가 없는지에 따라 다음 대응이 달라집니다.
+
+### 구조
+
+- `base_link` → `camera_link` 정적 TF(현재는 항등 변환 placeholder — 실측 장착 오프셋으로 교체 필요).
+- `rtabmap_launch`가 D435i의 depth+color로 시각 오도메트리 + 점유 격자 지도 + `map`→`odom`→`base_link` TF를 생성(`--delete_db_on_start`로 매번 새 지도).
+- `nav2_bringup`의 `navigation_launch.py`(전체 `bringup_launch.py`가 아님 — `map_server`/`amcl`을 또 띄우면 rtabmap과 지도/위치추정 역할이 충돌하므로 계획/제어 계층만 사용)가 그 위에서 경로 계획/주행을 담당.
+- 장애물 정보는 D435i의 포인트클라우드(`/camera/camera/depth/color/points`)에서 옵니다 — `CCAI_ENABLE_NAV2=1`일 때만 realsense의 `pointcloud.enable`을 켜도록 `patrol.launch.py`에 반영해뒀습니다(끄면 불필요한 CPU/대역폭 낭비라서 Nav2 안 쓸 땐 꺼둠). 이 토픽이 실제로 원하는 포맷/주기로 나오는지는 실기 확인이 필요합니다.
+
+### 다음 단계로 검증해야 할 것 (실기 필요)
+
+1. `install_slam_nav2.sh` 실행 결과 확인.
+2. 성공 시 `CCAI_ENABLE_SLAM=1`만 먼저 켜고 rtabmap 단독으로 지도/오도메트리가 생성되는지(`ros2 topic echo /map --once`, `ros2 run tf2_tools view_frames` 등으로) 확인.
+3. 그다음 `CCAI_ENABLE_NAV2=1`도 켜서 `ros2 action send_goal /navigate_to_pose ...`로 좌표 기반 이동이 실제로 되는지 확인.
+4. 확인되면 `patrol_node`/`LocationStore`와의 통합(좌표 기반 위치 저장, "정문으로 가"를 Nav2 목표로 변환)은 별도 작업으로 이어서 진행.
 
 ## 관련 문서
 
