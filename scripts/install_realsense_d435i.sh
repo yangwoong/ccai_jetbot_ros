@@ -153,9 +153,21 @@ if [ ! -d "${DEPS_DIR}/xacro" ]; then
   git clone --depth 1 --branch "${XACRO_BRANCH}" https://github.com/ros/xacro.git "${DEPS_DIR}/xacro"
 fi
 if [ ! -d "${DEPS_DIR}/diagnostics" ]; then
-  echo "[ccai] Cloning ros/diagnostics (${DIAGNOSTICS_BRANCH}) for diagnostic_updater/diagnostic_msgs - no apt package for it on this image"
+  echo "[ccai] Cloning ros/diagnostics (${DIAGNOSTICS_BRANCH}) for diagnostic_updater - no apt package for it on this image"
   git clone --depth 1 --branch "${DIAGNOSTICS_BRANCH}" https://github.com/ros/diagnostics.git "${DEPS_DIR}/diagnostics"
 fi
+# We only actually need diagnostic_updater out of that repo. Its sibling
+# packages (diagnostic_aggregator etc.) use newer rclcpp API
+# (std::optional-returning Client methods) that this image's older Humble
+# rclcpp doesn't have, so they fail to compile - and since we don't need
+# them anyway, skip them entirely rather than fighting a version-skew
+# compile error in code we don't use.
+for pkg_dir in "${DEPS_DIR}/diagnostics"/*/; do
+  pkg_name="$(basename "${pkg_dir}")"
+  if [ "${pkg_name}" != "diagnostic_updater" ]; then
+    touch "${pkg_dir}COLCON_IGNORE"
+  fi
+done
 if command -v rosdep >/dev/null 2>&1; then
   echo "[ccai] Installing xacro/diagnostics' own package dependencies via rosdep"
   rosdep install --from-paths "${DEPS_DIR}/xacro" "${DEPS_DIR}/diagnostics" --ignore-src -y || true
