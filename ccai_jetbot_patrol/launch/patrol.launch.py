@@ -109,12 +109,16 @@ def generate_launch_description():
                 ),
                 launch_arguments={
                     "enable_depth": "true",
-                    "enable_color": "false",
+                    # Color is on now so the web UI can show the D435i's own
+                    # view (with the drivable-floor overlay drawn on top) as
+                    # the main preview - see depth_nav_node's color subscription.
+                    "enable_color": "true",
                     "enable_infra1": "false",
                     "enable_infra2": "false",
                     "enable_gyro": "false",
                     "enable_accel": "false",
                     "depth_module.profile": "640x480x30",
+                    "rgb_camera.color_profile": "640x480x30",
                 }.items(),
             ))
     if env_enabled("CCAI_ENABLE_PATROL", True):

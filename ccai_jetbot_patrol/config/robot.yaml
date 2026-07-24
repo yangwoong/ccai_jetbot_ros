@@ -121,6 +121,8 @@ depth_nav_node:
     # CCAI_ENABLE_DEPTH_NAV=1 at launch (see host_docker_run.sh/.env).
     enabled: true
     depth_image_topic: "/camera/camera/depth/image_rect_raw"
+    color_image_topic: "/camera/camera/color/image_raw"
+    debug_image_enabled: true
     depth_scale_to_meters: 0.001
     min_valid_depth_m: 0.2
     max_valid_depth_m: 4.0

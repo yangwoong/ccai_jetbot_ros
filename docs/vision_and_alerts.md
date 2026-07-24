@@ -534,3 +534,15 @@ CSI 카메라를 천장을 보도록 마운트를 바꾸고, 전방에는 실측
 - **설치**: `scripts/install_realsense_d435i.sh`(컨테이너 안에서 실행) — librealsense2를 소스로 빌드(Jetson arm64용 apt 패키지가 없어서, 커널 패치 불필요한 `-DFORCE_RSUSB_BACKEND=true` 유저스페이스 백엔드 사용)하고 `realsense-ros`도 소스 빌드합니다. 스크립트 안 태그/브랜치 이름은 이 환경에서 실시간 검증되지 않았다는 점을 스크립트 주석에도 남겼습니다 — 클론이 실패하면 실제 저장소에서 현재 태그를 확인하세요.
 - 활성화 절차: D435i 연결 → `realsense2_camera` 런치로 `/camera/camera/depth/image_rect_raw` 발행 확인 → `robot.yaml`에서 `depth_nav_node.enabled: true`, `vision_nav_node.drive_enabled: false` → `CCAI_ENABLE_DEPTH_NAV=1`로 스택 실행.
 - 코드: `ccai_jetbot_patrol/depth_nav_node.py`(신규), `vision_nav_node.py`(`drive_enabled`), `launch/patrol.launch.py`(`CCAI_ENABLE_DEPTH_NAV`), `config/robot.yaml`(`depth_nav_node` 블록), `scripts/install_realsense_d435i.sh`(신규).
+
+## 20. 웹 프리뷰에 D435i 주행 뷰 추가 (주행가능 바닥 오버레이 + 위치 라벨)
+
+D435i의 RGB 영상을 실제 카메라 프리뷰로 쓰고, 그 위에 주행가능 바닥(깊이 기반)과 현재 모드/위치를 오버레이로 표시해달라는 요청으로 추가했습니다.
+
+- **D435i 컬러 스트림 활성화**: `patrol.launch.py`의 realsense 런치 인자에서 `enable_color`를 `false`→`true`로 바꿨습니다(`rgb_camera.color_profile: 640x480x30`). 기존에는 대역폭을 아끼려고 depth만 켰었는데, 이제 이 컬러 영상 자체가 오버레이의 바탕이 됩니다.
+- **`depth_nav_node`가 오버레이 프레임 생성**: depth 이미지에서 계산하는 좌/중/우 3분할 거리 신호(§19에서 이미 주행 판단에 쓰던 것)를 그대로 재사용해서, 컬러 프레임 위에 3개 구간을 색으로 칠합니다 — **초록=열림(장애물 정지거리의 2배 이상), 노랑=주의, 빨강=장애물(정지거리 이내)**. 상단에 OBSTACLE/CLEAR 상태, 하단에 `mode=patrolling target=정문`처럼 현재 모드와 위치(목적지 이름 등, `/ccai/status`의 `target` 필드)를 라벨로 표시하고, 그 아래에 최근 주행 판단 문구(예: `depth path left=1.20m center=2.40m right=0.90m steer=-0.15 ramp=1.00`)도 같이 넣습니다. `/ccai/depth_debug_image`로 발행됩니다.
+- 깊이 프레임과 컬러 프레임은 별도 토픽/타이밍으로 도착하므로 엄격히 동기화하지 않고, 컬러 프레임이 새로 도착할 때마다 **가장 최근에 계산된** 깊이 신호를 사용해 오버레이를 그립니다(약간의 시간차는 있을 수 있지만 방향 표시 목적에는 충분).
+- **웹 UI**: 프리뷰 영역 맨 앞에 "D435i 주행 뷰" 패널을 추가했습니다(`/api/depth_debug.jpg`, 150ms 주기 갱신 - 기존 CSI 카메라/디버그 패널과 동일한 방식). 기존 CSI 카메라 패널은 "CSI 카메라 (객체 인식용)"로, CSI 디버그 패널은 "CSI 장애물 감지 디버그"로 라벨을 바꿔서 각 패널이 뭘 보여주는지 명확히 했습니다.
+- 관련 파라미터(`robot.yaml` → `depth_nav_node`): `color_image_topic`(기본 `/camera/camera/color/image_raw`), `debug_image_enabled`.
+- 코드: `depth_nav_node.py`(`on_color_image`, `publish_debug_frame`, `analyze_depth`/`describe_signals`로 신호 계산과 발행 로직 분리), `web_chat_node.py`(`/api/depth_debug.jpg`, `depthDebug` 패널), `launch/patrol.launch.py`(`enable_color: true`).
+- **한계**: depth와 color 센서의 정확한 픽셀 정렬(`align_depth`)까지는 하지 않았습니다 — 좌/중/우 3등분 정도의 대략적인 방향 표시 목적에는 이 정도로 충분하다고 판단했습니다. 픽셀 단위로 정밀하게 맞추려면 `align_depth.enable:=true`를 realsense 런치 인자에 추가하고 정렬된 토픽을 구독하도록 확장이 필요합니다.

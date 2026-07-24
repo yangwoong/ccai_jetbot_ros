@@ -43,6 +43,7 @@ class WebChatNode(Node):
         self.create_subscription(String, "/ccai/camera_status", self.on_camera_status, 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("camera_topic").value), self.on_camera_frame, 2)
         self.create_subscription(CompressedImage, "/ccai/vision_debug_image", self.on_vision_debug_frame, 2)
+        self.create_subscription(CompressedImage, "/ccai/depth_debug_image", self.on_depth_debug_frame, 2)
         self.messages = deque(maxlen=200)
         self.latest_status = "{}"
         self.latest_llm_status = "{}"
@@ -50,6 +51,7 @@ class WebChatNode(Node):
         self.latest_camera_status = "{}"
         self.latest_camera_frame = None
         self.latest_vision_debug_frame = None
+        self.latest_depth_debug_frame = None
         self.app = self.build_app()
         self.start_server()
         self.get_logger().info("web_chat_node ready")
@@ -74,6 +76,9 @@ class WebChatNode(Node):
 
     def on_vision_debug_frame(self, msg: CompressedImage) -> None:
         self.latest_vision_debug_frame = bytes(msg.data)
+
+    def on_depth_debug_frame(self, msg: CompressedImage) -> None:
+        self.latest_depth_debug_frame = bytes(msg.data)
 
     def on_camera_status(self, msg: String) -> None:
         self.latest_camera_status = msg.data
@@ -127,6 +132,12 @@ class WebChatNode(Node):
                 return Response(content=EMPTY_JPEG, media_type="image/jpeg")
             return Response(content=self.latest_vision_debug_frame, media_type="image/jpeg")
 
+        @app.get("/api/depth_debug.jpg")
+        def depth_debug_jpg():
+            if self.latest_depth_debug_frame is None:
+                return Response(content=EMPTY_JPEG, media_type="image/jpeg")
+            return Response(content=self.latest_depth_debug_frame, media_type="image/jpeg")
+
         @app.post("/api/chat")
         def chat(req: ChatRequest):
             self.messages.append({"source": "admin", "message": req.message})
@@ -165,6 +176,8 @@ class WebChatNode(Node):
                     self.send_bytes(node.latest_camera_frame or EMPTY_JPEG, "image/jpeg")
                 elif self.path.startswith("/api/vision_debug.jpg"):
                     self.send_bytes(node.latest_vision_debug_frame or EMPTY_JPEG, "image/jpeg")
+                elif self.path.startswith("/api/depth_debug.jpg"):
+                    self.send_bytes(node.latest_depth_debug_frame or EMPTY_JPEG, "image/jpeg")
                 else:
                     self.send_error(404)
 
@@ -257,8 +270,9 @@ HTML_PAGE = """
 <main>
   <header><h1>CCAI JetBot Patrol</h1><span id="state">loading</span><span id="cameraState">camera</span><span id="vision">vision</span><span id="llm">llm</span></header>
   <div class="cameras">
-    <figure><img id="camera" src="/api/camera.jpg" alt="JetBot camera"><figcaption>카메라</figcaption></figure>
-    <figure><img id="visionDebug" src="/api/vision_debug.jpg" alt="Obstacle detection debug"><figcaption>장애물 감지 디버그 (노랑=엣지 영역, 하늘색=경로 앞, 파랑=바퀴 기준, 초록=YOLO)</figcaption></figure>
+    <figure><img id="depthDebug" src="/api/depth_debug.jpg" alt="D435i navigation view"><figcaption>D435i 주행 뷰 (초록=열림, 노랑=주의, 빨강=장애물 - 하단에 모드/위치 라벨)</figcaption></figure>
+    <figure><img id="camera" src="/api/camera.jpg" alt="JetBot CSI camera"><figcaption>CSI 카메라 (객체 인식용)</figcaption></figure>
+    <figure><img id="visionDebug" src="/api/vision_debug.jpg" alt="Obstacle detection debug"><figcaption>CSI 장애물 감지 디버그 (노랑=엣지 영역, 하늘색=경로 앞, 파랑=바퀴 기준, 초록=YOLO)</figcaption></figure>
   </div>
   <p id="visionDetail">vision detail</p>
   <section id="log"></section>
@@ -284,6 +298,7 @@ const vision = document.getElementById('vision');
 const cameraState = document.getElementById('cameraState');
 const camera = document.getElementById('camera');
 const visionDebug = document.getElementById('visionDebug');
+const depthDebug = document.getElementById('depthDebug');
 const visionDetail = document.getElementById('visionDetail');
 async function refresh() {
   const res = await fetch('/api/status');
@@ -299,6 +314,7 @@ async function refresh() {
 function refreshCamera() {
   camera.src = '/api/camera.jpg?t=' + Date.now();
   visionDebug.src = '/api/vision_debug.jpg?t=' + Date.now();
+  depthDebug.src = '/api/depth_debug.jpg?t=' + Date.now();
 }
 document.getElementById('form').addEventListener('submit', async (event) => {
   event.preventDefault();
