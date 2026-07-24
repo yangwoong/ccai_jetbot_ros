@@ -25,8 +25,18 @@ export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$(pwd)/ccai_jetbot_patrol/config
 # than keep chasing CycloneDDS internals, switch RMW implementations
 # entirely to sidestep this specific component: FastDDS doesn't use this
 # participant-index allocation scheme at all.
-if find /opt/ros/humble -maxdepth 4 -name 'librmw_fastrtps_cpp.so' 2>/dev/null | grep -q .; then
-  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+#
+# IMPORTANT: this base image (dustynv/ros:humble-desktop-l4t-r32.7.1) already
+# bakes in RMW_IMPLEMENTATION=rmw_cyclonedds_cpp as an image-level env var.
+# The previous version of this override used `${RMW_IMPLEMENTATION:-...}`
+# (only apply if unset), which is a no-op when the image already set a
+# non-empty value - so the switch to FastDDS never actually took effect, and
+# the exact same crash recurred. Force it (unless CCAI_RMW_IMPLEMENTATION is
+# explicitly set, for anyone who deliberately wants a different RMW).
+if [ -n "${CCAI_RMW_IMPLEMENTATION:-}" ]; then
+  export RMW_IMPLEMENTATION="${CCAI_RMW_IMPLEMENTATION}"
+elif find /opt/ros/humble -maxdepth 4 -name 'librmw_fastrtps_cpp.so' 2>/dev/null | grep -q .; then
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 else
   echo "[ccai] WARNING: rmw_fastrtps_cpp not found under /opt/ros/humble - staying on default RMW (cyclonedds), which is known-broken here for many-node startup" >&2
 fi
