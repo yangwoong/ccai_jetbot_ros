@@ -22,7 +22,7 @@ patrol_node:
     # true only once visual_odom_node is actually running (CCAI_ENABLE_VISUAL_ODOM=1) -
     # see docs/navigation_roadmap.md. Leave false for the default reactive
     # patrol (depth_nav_node driving EXPLORING directly).
-    explore_frontier_mode: false
+    explore_frontier_mode: true
     odom_timeout_seconds: 2.0
     pose_goal_tolerance_m: 0.15
     pose_goal_timeout_seconds: 30.0
@@ -35,7 +35,7 @@ visual_odom_node:
   ros__parameters:
     # true only alongside CCAI_ENABLE_VISUAL_ODOM=1 at launch (this alone
     # doesn't start the node - see launch/patrol.launch.py).
-    enabled: false
+    enabled: true
     color_topic: "/camera/camera/color/image_raw"
     depth_topic: "/camera/camera/aligned_depth_to_color/image_raw"
     camera_info_topic: "/camera/camera/color/camera_info"
