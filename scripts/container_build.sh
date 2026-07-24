@@ -55,4 +55,16 @@ python3 - <<'PY' || python3 -m pip install pycuda || echo "pycuda install failed
 import pycuda.driver  # noqa: F401
 PY
 
-colcon build --symlink-install
+# A failure in ANY discovered package (e.g. an optional/experimental
+# dependency like realsense-ros, or one of its own dependencies) used to kill
+# this whole script outright via `set -e` above - and since
+# container_run_patrol.sh runs this as the container's foreground startup
+# step, that took the entire container down with it (camera, patrol, LLM, web
+# chat, everything), not just the broken package. Never let a colcon build
+# failure be fatal here: log it clearly and continue, so the rest of the
+# stack still starts. If ccai_jetbot_patrol itself is what failed to build,
+# the launch step right after this script returns will fail loudly and
+# specifically on that, which is the actually-actionable signal.
+if ! colcon build --symlink-install; then
+  echo "[ccai] colcon build had failures (see output above) - continuing anyway so the rest of the stack can still start. A package that actually failed to build will not have picked up its latest code." >&2
+fi
