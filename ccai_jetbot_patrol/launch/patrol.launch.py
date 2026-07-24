@@ -127,74 +127,24 @@ def generate_launch_description():
                     # (CSI + D435i) were running at once.
                     "depth_module.depth_profile": "640x480x30",
                     "rgb_camera.color_profile": "640x480x30",
-                    # Only turned on for Nav2's costmap obstacle layer (see
-                    # config/nav2_params.yaml, which reads
-                    # /camera/camera/depth/color/points) - extra CPU/bandwidth
-                    # cost with no consumer otherwise, since depth_nav_node
-                    # reads the raw depth image directly, not a point cloud.
-                    "pointcloud.enable": "true" if env_enabled("CCAI_ENABLE_NAV2", False) else "false",
+                    # Needed for visual_odom_node's aligned_depth_to_color
+                    # subscription (pixel-for-pixel depth+color correspondence
+                    # for its ORB+Kabsch odometry). Extra CPU cost with no
+                    # consumer otherwise, so only turned on when visual odom
+                    # is actually enabled.
+                    "align_depth.enable": "true" if env_enabled("CCAI_ENABLE_VISUAL_ODOM", False) else "false",
                 }.items(),
             ))
-    if env_enabled("CCAI_ENABLE_SLAM", False):
-        # RTAB-Map does RGB-D visual SLAM from the D435i alone (depth+color) -
-        # no wheel encoders needed, since it computes its own visual odometry.
-        # Requires scripts/install_slam_nav2.sh to have installed
-        # ros-humble-rtabmap-ros first. This is a new, experimental
-        # capability layered on top of - not replacing - the reactive
-        # depth_nav_node patrol that remains this project's stable default;
-        # see docs/navigation_roadmap.md for how they relate and what's still
-        # unverified about this integration on this exact hardware/image.
-        #
-        # base_link -> camera static transform: the D435i is rigidly mounted
-        # facing forward with no measured offset yet, so this is an identity
-        # placeholder - replace with the actual mount offset (translation in
-        # meters, rotation in radians as roll/pitch/yaw) once measured.
-        nodes.append(Node(
-            package="tf2_ros", executable="static_transform_publisher", name="base_link_to_camera",
-            arguments=["0", "0", "0", "0", "0", "0", "base_link", "camera_link"],
-        ))
-        nodes.append(IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution([FindPackageShare("rtabmap_launch"), "launch", "rtabmap.launch.py"])
-            ),
-            launch_arguments={
-                "rtabmap_args": "--delete_db_on_start",
-                "frame_id": "base_link",
-                "depth_topic": "/camera/camera/depth/image_rect_raw",
-                "rgb_topic": "/camera/camera/color/image_raw",
-                "camera_info_topic": "/camera/camera/color/camera_info",
-                "approx_sync": "true",
-                "visual_odometry": "true",
-                "qos": "2",
-            }.items(),
-        ))
-    if env_enabled("CCAI_ENABLE_NAV2", False):
-        # nav2's *navigation* launch (planner+controller+costmaps), not the
-        # full *bringup* launch - bringup also starts map_server/amcl, which
-        # would fight rtabmap for the map->odom transform and localization
-        # role. rtabmap (above) is the map/localization source here; nav2
-        # only needs to plan and drive against it. Requires CCAI_ENABLE_SLAM
-        # (rtabmap providing the map + odom->base_link TF) to mean anything.
-        nodes.append(IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                PathJoinSubstitution([FindPackageShare("nav2_bringup"), "launch", "navigation_launch.py"])
-            ),
-            launch_arguments={
-                "use_sim_time": "false",
-                "params_file": PathJoinSubstitution(
-                    [FindPackageShare("ccai_jetbot_patrol"), "config", "nav2_params.yaml"]
-                ),
-            }.items(),
-        ))
-    if env_enabled("CCAI_ENABLE_EXPLORE_FRONTIER", False):
-        # Real frontier-based exploration (explore_node.py) instead of
-        # depth_nav_node's reactive "steer toward open space" heuristic during
-        # autonomous exploration - see explore_node.py's docstring. Only
-        # meaningful with CCAI_ENABLE_SLAM + CCAI_ENABLE_NAV2 both on; also
-        # set patrol_node's explore_frontier_mode: true in robot.yaml at the
-        # same time so patrol_node stops publishing its own /cmd_vel during
-        # EXPLORING and fully yields to Nav2.
-        nodes.append(Node(package="ccai_jetbot_patrol", executable="explore_node", name="explore_node", parameters=[config], output="screen"))
+    if env_enabled("CCAI_ENABLE_VISUAL_ODOM", False):
+        # Lightweight custom RGB-D visual odometry (ORB feature matching +
+        # Kabsch rigid-transform fit) feeding patrol_node's point-to-point
+        # POSE_GOAL controller and coverage-seeking EXPLORING mode - see
+        # visual_odom_node.py's docstring and docs/navigation_roadmap.md.
+        # NOT full SLAM (no loop closure, no map, drifts over time); adopted
+        # instead of rtabmap_ros/Nav2 because those packages are confirmed
+        # unavailable via apt on this image (scripts/install_slam_nav2.sh)
+        # and too large/risky to source-build on a 4GB Jetson Nano.
+        nodes.append(Node(package="ccai_jetbot_patrol", executable="visual_odom_node", name="visual_odom_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_PATROL", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="patrol_node", name="patrol_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_VLM", True):

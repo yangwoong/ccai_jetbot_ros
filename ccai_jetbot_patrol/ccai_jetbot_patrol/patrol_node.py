@@ -10,20 +10,6 @@ from std_msgs.msg import Bool, String
 from ccai_jetbot_patrol.locations import LocationStore
 from ccai_jetbot_patrol.mission import parse_mission_command
 
-# Both optional: only present once scripts/install_slam_nav2.sh has actually
-# installed Nav2/rtabmap. Degrade gracefully (map-pose features just stay
-# unavailable) rather than fail to import the whole node if they're missing -
-# same pattern as every other optional dependency in this project (pycuda,
-# librealsense, etc).
-try:
-    from rclpy.action import ActionClient
-    from nav2_msgs.action import NavigateToPose
-    import tf2_ros
-except Exception:  # pragma: no cover
-    ActionClient = None
-    NavigateToPose = None
-    tf2_ros = None
-
 
 class PatrolState(str, Enum):
     IDLE = "idle"
@@ -36,7 +22,7 @@ class PatrolState(str, Enum):
     MANUAL_DRIVE = "manual_drive"
     REPLAYING = "replaying"
     EXPLORING = "exploring"
-    NAV2_GOAL = "nav2_goal"
+    POSE_GOAL = "pose_goal"
 
 
 class PatrolNode(Node):
@@ -64,17 +50,24 @@ class PatrolNode(Node):
         # and how long it waits for that reply before giving up and moving on.
         self.declare_parameter("explore_label_interval_seconds", 45.0)
         self.declare_parameter("explore_label_timeout_seconds", 120.0)
-        # When true, EXPLORING yields driving entirely to explore_node's
-        # frontier algorithm (which drives via Nav2, publishing /cmd_vel
-        # directly) instead of depth_nav_node's reactive open-space-seeking.
-        # Only meaningful when explore_node/SLAM/Nav2 are actually enabled
-        # (CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1, explore_node.enabled: true)
-        # - set this true at the same time as those, or EXPLORING will just
-        # sit still with nothing driving it. Default false: the existing
-        # reactive patrol is completely unaffected unless explicitly opted in.
+        # When true, EXPLORING uses visual_odom_node's (x, y, yaw) estimate
+        # to actively seek uncovered ground (coverage-seeking - see
+        # pick_explore_subgoal) and steers there itself via
+        # compute_steering_twist, instead of depth_nav_node's plain reactive
+        # "steer toward whichever side looks more open" heuristic (which has
+        # no notion of "already been here"). Requires visual_odom_node.enabled:
+        # true too, or there's no pose to seek with. Default false: the
+        # existing reactive patrol is completely unaffected unless both are
+        # explicitly turned on together. Depth-based obstacle safety (from
+        # depth_nav_node) still overrides in both modes.
         self.declare_parameter("explore_frontier_mode", False)
-        self.declare_parameter("map_frame", "map")
-        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("odom_timeout_seconds", 2.0)
+        self.declare_parameter("pose_goal_tolerance_m", 0.15)
+        self.declare_parameter("pose_goal_timeout_seconds", 30.0)
+        self.declare_parameter("heading_align_threshold_rad", 0.3)
+        self.declare_parameter("explore_step_distance_m", 0.8)
+        self.declare_parameter("explore_visited_cell_size_m", 0.5)
+        self.declare_parameter("explore_candidate_count", 8)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -98,6 +91,22 @@ class PatrolNode(Node):
         self.replay_location = ""
         self.awaiting_label = False
         self.explore_last_label_request_at = 0.0
+        # Own-odometry state (from visual_odom_node's /ccai/odom_pose, a
+        # lightweight self-built RGB-D visual odometry - see that node's
+        # docstring for why this replaces rtabmap/Nav2 here). Everything
+        # below is None/unavailable until that node is enabled and running;
+        # has_recent_odom() is the single check everything else goes through.
+        self.odom_x = 0.0
+        self.odom_y = 0.0
+        self.odom_yaw = 0.0
+        self.odom_received_at = 0.0
+        self.pose_goal_target = None
+        self.pose_goal_label = ""
+        self.pose_goal_question = ""
+        self.pose_goal_started_at = 0.0
+        self.visited_cells = {}
+        self.explore_sub_goal = None
+        self.explore_sub_goal_started_at = 0.0
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -109,31 +118,16 @@ class PatrolNode(Node):
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
         self.create_subscription(Twist, "/ccai/vision_cmd_vel", self.on_vision_cmd_vel, 10)
         self.create_subscription(String, "/ccai/location_feature_result", self.on_location_feature_result, 10)
+        self.create_subscription(String, "/ccai/odom_pose", self.on_odom_pose, 10)
         # Raw admin chat text, subscribed directly (not via the parsed
         # /ccai/mission_command) so a free-form location name typed in reply
         # to a label request ("창고", "휴게실 앞" etc.) can be captured as-is
         # instead of being forced through command parsing, which has no
         # concept of "the next message is a label answer". See on_admin_text.
         self.create_subscription(String, "/ccai/admin_text", self.on_admin_text, 10)
-        # Tells explore_node to stop sending new Nav2 goals (and cancel the
-        # active one) while paused for a label reply - see
-        # tick_explore_labeling/on_admin_text. Harmless to publish even when
-        # explore_node isn't running (no subscriber, no-op).
+        # Vestigial no-op broadcast from the earlier Nav2-based design - kept
+        # harmless (no subscriber now) since nothing currently depends on it.
         self.explore_pause_pub = self.create_publisher(Bool, "/ccai/explore_pause", 10)
-
-        # Nav2/tf2 are optional (see the try/except import above) - only
-        # usable once scripts/install_slam_nav2.sh has installed them. When
-        # unavailable, map poses just never get captured/used and everything
-        # else (visual-feature-only locations, reactive patrol) works exactly
-        # as before - see request_location_feature_capture/start_replay.
-        self.tf_buffer = None
-        self.nav_client = None
-        self.nav_goal_handle = None
-        if tf2_ros is not None:
-            self.tf_buffer = tf2_ros.Buffer()
-            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
-        if ActionClient is not None and NavigateToPose is not None:
-            self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
 
         heartbeat = float(self.get_parameter("heartbeat_seconds").value)
         self.create_timer(heartbeat, self.publish_status)
@@ -206,15 +200,15 @@ class PatrolNode(Node):
 
     def start_replay(self, label: str, question: str) -> None:
         pose = self.location_store.get_pose(label)
-        if pose is not None and self.nav_client is not None:
-            # A real SLAM map coordinate exists for this label (saved during
-            # frontier exploration - see on_admin_text) and Nav2 is available:
-            # drive there with an actual navigation goal instead of the old
-            # blind timed-move-sequence replay, which has no way to correct
-            # for drift. Falls through to that replay/inspect path below if
-            # this fails to even send (e.g. Nav2 not actually running despite
-            # nav_client existing, or no map yet).
-            if self.start_nav2_goal(label, question, pose):
+        if pose is not None:
+            # A real coordinate exists for this label (saved during
+            # autonomous exploration - see on_admin_text) and our own
+            # odometry is running: drive there with the point-to-point
+            # controller instead of the old blind timed-move-sequence
+            # replay, which has no way to correct for drift. Falls through
+            # to that replay/inspect path below if odometry isn't available
+            # right now (start_pose_goal returns False in that case).
+            if self.start_pose_goal(label, question, pose):
                 return
         steps = self.location_store.get(label)
         if not steps:
@@ -236,63 +230,87 @@ class PatrolNode(Node):
         self.set_state(PatrolState.REPLAYING)
         self.publish_event(f"heading to {label} ({len(steps)} steps)")
 
-    def start_nav2_goal(self, label: str, question: str, pose: dict) -> bool:
-        """Send an actual Nav2 NavigateToPose goal to a stored map coordinate.
-        Returns False (caller should fall back to the timed-replay/inspect
-        path) if Nav2 isn't actually reachable right now - only send-failure
-        is checked synchronously here; acceptance/success/failure of the
-        goal itself is handled asynchronously in on_nav2_goal_response/result.
+    def start_pose_goal(self, label: str, question: str, pose: dict) -> bool:
+        """Drive to a stored (x, y) coordinate using our own point-to-point
+        controller (compute_steering_twist), fed by visual_odom_node's
+        lightweight odometry - no Nav2/rtabmap needed. Returns False (caller
+        should fall back to the timed-replay/inspect path) if there's no
+        recent odometry to navigate by.
+        """
+        if not self.has_recent_odom():
+            self.publish_event(f"오도메트리 없음 - '{label}' 좌표 이동 불가, 기존 방식으로 대체")
+            return False
+        self.pose_goal_target = (float(pose["x"]), float(pose["y"]))
+        self.pose_goal_label = label
+        self.pose_goal_question = question
+        self.pose_goal_started_at = time.monotonic()
+        self.current_target = label
+        self.set_state(PatrolState.POSE_GOAL)
+        self.publish_event(f"'{label}' 좌표로 이동 시작 (x={pose['x']:.2f}, y={pose['y']:.2f})")
+        return True
+
+    def finish_pose_goal(self, success: bool) -> None:
+        label = self.pose_goal_label
+        question = self.pose_goal_question
+        self.stop_motion()
+        if success:
+            self.publish_event(f"'{label}' 도착 (좌표 이동 완료)")
+            stored_features = self.location_store.get_features(label)
+            if stored_features:
+                self.location_feature_request_pub.publish(String(data=json.dumps(
+                    {"action": "match", "label": label, "descriptors": stored_features}, ensure_ascii=False,
+                )))
+            self.request_analysis(question, location=label)
+        self.pose_goal_target = None
+        self.set_state(PatrolState.STOPPED)
+
+    def compute_steering_twist(self, target_x: float, target_y: float, linear_speed: float, angular_speed: float):
+        """Simple proportional point-to-point controller: rotate to face the
+        target if the heading error is large, otherwise drive forward
+        (slowing near the goal) while making small heading corrections.
+        Returns (Twist, arrived_bool). Assumes has_recent_odom() already True.
         """
         import math
 
-        if not self.nav_client.wait_for_server(timeout_sec=1.0):
-            self.publish_event(f"Nav2 action server not available - falling back for '{label}'")
-            return False
-        goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = str(self.get_parameter("map_frame").value)
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
-        goal.pose.pose.position.x = float(pose["x"])
-        goal.pose.pose.position.y = float(pose["y"])
-        yaw = float(pose.get("yaw", 0.0))
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        self.current_target = label
-        self.replay_location = label
-        self.replay_question = question
-        self.set_state(PatrolState.NAV2_GOAL)
-        self.publish_event(f"'{label}' 지도 좌표로 Nav2 이동 시작 (x={pose['x']:.2f}, y={pose['y']:.2f})")
-        future = self.nav_client.send_goal_async(goal)
-        future.add_done_callback(self.on_nav2_goal_response)
-        return True
+        dx = target_x - self.odom_x
+        dy = target_y - self.odom_y
+        distance = math.hypot(dx, dy)
+        tolerance = float(self.get_parameter("pose_goal_tolerance_m").value)
+        twist = Twist()
+        if distance < tolerance:
+            return twist, True
+        target_heading = math.atan2(dy, dx)
+        heading_error = math.atan2(
+            math.sin(target_heading - self.odom_yaw), math.cos(target_heading - self.odom_yaw)
+        )
+        align_threshold = float(self.get_parameter("heading_align_threshold_rad").value)
+        if abs(heading_error) > align_threshold:
+            twist.angular.z = clamp(heading_error * 1.5, -angular_speed, angular_speed)
+        else:
+            twist.linear.x = min(linear_speed, linear_speed * clamp(distance / max(tolerance * 2.0, 0.01), 0.3, 1.0))
+            twist.angular.z = clamp(heading_error * 0.8, -angular_speed * 0.5, angular_speed * 0.5)
+        return twist, False
 
-    def on_nav2_goal_response(self, future) -> None:
-        try:
-            goal_handle = future.result()
-        except Exception as exc:
-            self.publish_event(f"Nav2 goal 전송 실패: {exc}")
-            self.set_state(PatrolState.STOPPED)
-            return
-        if not goal_handle.accepted:
-            self.publish_event(f"Nav2가 '{self.replay_location}' 이동 목표를 거부했습니다")
-            self.set_state(PatrolState.STOPPED)
-            return
-        self.nav_goal_handle = goal_handle
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self.on_nav2_goal_result)
-
-    def on_nav2_goal_result(self, future) -> None:
-        self.nav_goal_handle = None
-        label = self.replay_location
-        question = self.replay_question
-        self.stop_motion()
-        self.publish_event(f"'{label}' 도착 (Nav2 이동 완료)")
-        stored_features = self.location_store.get_features(label)
-        if stored_features:
-            self.location_feature_request_pub.publish(String(data=json.dumps(
-                {"action": "match", "label": label, "descriptors": stored_features}, ensure_ascii=False,
-            )))
-        self.request_analysis(question, location=label)
-        self.set_state(PatrolState.STOPPED)
+    def compute_pose_goal_twist(self, linear_speed: float, angular_speed: float):
+        """Returns a Twist to publish, or None if the goal has already been
+        finalized (arrived, timed out, or odometry lost) inside this call -
+        the caller should just return without publishing anything more."""
+        if not self.has_recent_odom():
+            self.publish_event(f"오도메트리 신호 끊김 - '{self.pose_goal_label}' 이동 중단")
+            self.finish_pose_goal(False)
+            return None
+        timeout = float(self.get_parameter("pose_goal_timeout_seconds").value)
+        if time.monotonic() - self.pose_goal_started_at > timeout:
+            self.publish_event(f"'{self.pose_goal_label}' 이동 시간 초과 - 정지")
+            self.finish_pose_goal(False)
+            return None
+        twist, arrived = self.compute_steering_twist(
+            self.pose_goal_target[0], self.pose_goal_target[1], linear_speed, angular_speed
+        )
+        if arrived:
+            self.finish_pose_goal(True)
+            return None
+        return twist
 
     def save_recorded_location(self, label: str) -> None:
         if not label:
@@ -330,19 +348,26 @@ class PatrolNode(Node):
         )
 
     def start_explore(self) -> None:
-        # Autonomous exploration reuses the exact same reactive driving as
-        # PATROLLING (vision_nav_node/depth_nav_node both drive "exploring"
-        # the same way they drive "patrolling" - see their drives_forward
-        # checks). What makes this a distinct mode is patrol_node itself
-        # periodically pausing it to build up a set of named locations - see
-        # tick_explore_labeling/on_admin_text. There's still no odometry, so
-        # this is a growing list of "known spots" (each with visual features,
-        # like a quick-saved location), not a geometric map - see
-        # docs/navigation_roadmap.md.
+        # Autonomous exploration. By default (explore_frontier_mode: false)
+        # this reuses the exact same reactive driving as PATROLLING
+        # (vision_nav_node/depth_nav_node both drive "exploring" the same way
+        # they drive "patrolling"). When explore_frontier_mode is true and
+        # visual_odom_node is running, drive_loop instead uses
+        # compute_explore_twist() - a coverage-seeking controller that tracks
+        # which coarse grid cells have already been visited (self.visited_cells)
+        # and steers toward less-visited ground, which is what actually makes
+        # this "look for the way forward" instead of just avoiding whatever's
+        # nearby. Either way, patrol_node periodically pauses to build up a
+        # set of named locations - see tick_explore_labeling/on_admin_text.
+        # Still no real map/loop-closure, so this is a growing list of "known
+        # spots" (each with visual features, and a coordinate if odometry is
+        # running), not a geometric map - see docs/navigation_roadmap.md.
         self.set_state(PatrolState.EXPLORING)
         self.current_target = ""
         self.awaiting_label = False
         self.explore_last_label_request_at = time.monotonic()
+        self.visited_cells = {}
+        self.explore_sub_goal = None
         self.publish_event(
             "autonomous exploration started - driving and avoiding obstacles on its own; "
             "periodically stops to ask for a name for the current spot"
@@ -363,39 +388,32 @@ class PatrolNode(Node):
         if now - self.explore_last_label_request_at > interval:
             self.awaiting_label = True
             self.explore_last_label_request_at = now
-            # stop_motion() covers reactive mode (depth_nav_node driving via
-            # /ccai/vision_cmd_vel through this node's own drive_loop);
-            # explore_pause covers frontier mode (explore_node driving via
-            # Nav2, which publishes /cmd_vel directly - this node's
-            # stop_motion() alone wouldn't stop that). Both are harmless
-            # no-ops in whichever mode isn't actually active.
             self.stop_motion()
             self.explore_pause_pub.publish(Bool(data=True))
             self.publish_event(
                 "탐색 중 새 지점 발견 - 이 위치의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')"
             )
 
-    def lookup_map_pose(self):
-        """(x, y, yaw) of base_link in the map frame, or None if no SLAM map/TF
-        is available (Nav2/rtabmap not running, or not yet localized)."""
-        if self.tf_buffer is None:
-            return None
+    def on_odom_pose(self, msg: String) -> None:
         try:
-            import math
+            payload = json.loads(msg.data)
+            self.odom_x = float(payload["x"])
+            self.odom_y = float(payload["y"])
+            self.odom_yaw = float(payload["yaw"])
+            self.odom_received_at = time.monotonic()
+        except Exception:
+            pass
 
-            map_frame = str(self.get_parameter("map_frame").value)
-            base_frame = str(self.get_parameter("base_frame").value)
-            transform = self.tf_buffer.lookup_transform(map_frame, base_frame, rclpy.time.Time())
-            translation = transform.transform.translation
-            rotation = transform.transform.rotation
-            yaw = math.atan2(
-                2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
-                1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
-            )
-            return translation.x, translation.y, yaw
-        except Exception as exc:
-            self.get_logger().debug(f"map pose lookup failed: {exc}")
-            return None
+    def has_recent_odom(self) -> bool:
+        timeout = float(self.get_parameter("odom_timeout_seconds").value)
+        return self.odom_received_at > 0.0 and time.monotonic() - self.odom_received_at <= timeout
+
+    def is_obstacle_now(self) -> bool:
+        try:
+            payload = json.loads(self.last_vision_status)
+            return bool(payload.get("obstacle_now", False))
+        except Exception:
+            return False
 
     def on_admin_text(self, msg: String) -> None:
         if self.state != PatrolState.EXPLORING or not self.awaiting_label:
@@ -411,16 +429,65 @@ class PatrolNode(Node):
                 self.location_store.set(label, [])
             self.publish_event(f"탐색 중 위치 라벨 저장: {label}")
             self.request_location_feature_capture(label)
-            pose = self.lookup_map_pose()
-            if pose is not None:
-                self.location_store.set_pose(label, pose[0], pose[1], pose[2])
+            if self.has_recent_odom():
+                self.location_store.set_pose(label, self.odom_x, self.odom_y, self.odom_yaw)
                 self.publish_event(
-                    f"'{label}' 지도 좌표 저장됨 (x={pose[0]:.2f}, y={pose[1]:.2f}) - "
+                    f"'{label}' 좌표 저장됨 (x={self.odom_x:.2f}, y={self.odom_y:.2f}) - "
                     "이 좌표로 나중에 실제 이동 가능"
                 )
         self.awaiting_label = False
         self.explore_last_label_request_at = time.monotonic()
         self.explore_pause_pub.publish(Bool(data=False))
+
+    def pick_explore_subgoal(self):
+        """Sample candidate points in a ring around the robot and pick
+        whichever lands in the least-visited coarse grid cell (with a little
+        random tie-breaking so it doesn't lock onto one direction forever) -
+        a simple coverage-seeking heuristic that actually answers "which way
+        haven't I been" instead of depth_nav_node's plain "which way looks
+        more open right now" (the latter has no memory, so it can circle the
+        same open room indefinitely - this is the actual bug the user
+        reported: obstacles avoided fine, but no progress finding new ground).
+        """
+        import math
+        import random
+
+        cell_size = float(self.get_parameter("explore_visited_cell_size_m").value)
+        step = float(self.get_parameter("explore_step_distance_m").value)
+        count = max(int(self.get_parameter("explore_candidate_count").value), 1)
+        best = None
+        best_score = None
+        for i in range(count):
+            angle = self.odom_yaw + (i - count / 2.0) * (2.0 * math.pi / count) + random.uniform(-0.15, 0.15)
+            candidate_x = self.odom_x + step * math.cos(angle)
+            candidate_y = self.odom_y + step * math.sin(angle)
+            cell = (round(candidate_x / cell_size), round(candidate_y / cell_size))
+            score = self.visited_cells.get(cell, 0) + random.uniform(0.0, 0.2)
+            if best is None or score < best_score:
+                best = (candidate_x, candidate_y)
+                best_score = score
+        return best
+
+    def compute_explore_twist(self, linear_speed: float, angular_speed: float) -> Twist:
+        cell_size = float(self.get_parameter("explore_visited_cell_size_m").value)
+        cell = (round(self.odom_x / cell_size), round(self.odom_y / cell_size))
+        self.visited_cells[cell] = self.visited_cells.get(cell, 0) + 1
+
+        now = time.monotonic()
+        timeout = float(self.get_parameter("pose_goal_timeout_seconds").value)
+        need_new_goal = self.explore_sub_goal is None or now - self.explore_sub_goal_started_at > timeout
+        if not need_new_goal:
+            twist, arrived = self.compute_steering_twist(
+                self.explore_sub_goal[0], self.explore_sub_goal[1], linear_speed, angular_speed
+            )
+            if not arrived:
+                return twist
+        self.explore_sub_goal = self.pick_explore_subgoal()
+        self.explore_sub_goal_started_at = now
+        twist, _arrived = self.compute_steering_twist(
+            self.explore_sub_goal[0], self.explore_sub_goal[1], linear_speed, angular_speed
+        )
+        return twist
 
     def start_manual_move(self, kind: str, modifier: str = "") -> None:
         self.manual_kind = kind
@@ -531,20 +598,40 @@ class PatrolNode(Node):
     def drive_loop(self) -> None:
         self.tick_explore_labeling()
 
-        # These two states are driven by Nav2's own controller_server, which
-        # publishes /cmd_vel directly - this node must not publish anything at
-        # all here (not even a stop), or the two would fight over the same
-        # topic at similar rates. NAV2_GOAL: a one-off "go to this saved map
-        # coordinate" goal (see start_nav2_goal). EXPLORING+explore_frontier_mode:
-        # explore_node's frontier algorithm is driving via repeated Nav2 goals.
-        if self.state == PatrolState.NAV2_GOAL:
+        linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale
+        angular_speed = float(self.get_parameter("angular_speed").value) * self.speed_scale
+        use_frontier_mode = bool(self.get_parameter("explore_frontier_mode").value)
+
+        # POSE_GOAL and EXPLORING-with-explore_frontier_mode both drive via
+        # this node's own point-to-point controller (compute_steering_twist),
+        # fed by visual_odom_node - not depth_nav_node/Nav2. depth_nav_node's
+        # obstacle-avoidance twist still takes priority for safety whenever it
+        # actually detects something (obstacle_now), since our own controller
+        # has no obstacle sensing of its own - it only steers toward a target
+        # coordinate.
+        if self.state == PatrolState.POSE_GOAL:
+            if self.is_obstacle_now() and self.use_recent_vision_cmd():
+                self.cmd_vel_pub.publish(self.last_vision_cmd)
+                return
+            twist = self.compute_pose_goal_twist(linear_speed, angular_speed)
+            if twist is None:
+                return
+            self.cmd_vel_pub.publish(twist)
             return
-        if self.state == PatrolState.EXPLORING and bool(self.get_parameter("explore_frontier_mode").value):
+        if self.state == PatrolState.EXPLORING and use_frontier_mode and not self.awaiting_label:
+            if self.is_obstacle_now() and self.use_recent_vision_cmd():
+                self.cmd_vel_pub.publish(self.last_vision_cmd)
+                return
+            if self.has_recent_odom():
+                self.cmd_vel_pub.publish(self.compute_explore_twist(linear_speed, angular_speed))
+                return
+            # No odometry yet (visual_odom_node still starting up, or a bad
+            # stretch of frames it couldn't track) - hold still rather than
+            # drive blind, safer than guessing.
+            self.stop_motion()
             return
 
         twist = Twist()
-        linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale
-        angular_speed = float(self.get_parameter("angular_speed").value) * self.speed_scale
 
         # MANUAL_DRIVE only ever asks vision_nav_node to drive when going forward
         # (the camera faces forward; there's nothing useful to gate on for reverse).
@@ -555,7 +642,8 @@ class PatrolNode(Node):
         # reply - tick_explore_labeling() above already called stop_motion()
         # the moment it set awaiting_label, and excluding EXPLORING from this
         # set here means we fall through to the safe_stop_on_idle catch-all
-        # below instead of a stray vision_cmd_vel overriding that stop.
+        # below instead of a stray vision_cmd_vel overriding that stop. This
+        # branch only runs at all when NOT use_frontier_mode (handled above).
         if self.state == PatrolState.EXPLORING and not self.awaiting_label:
             vision_gated_states = vision_gated_states | {PatrolState.EXPLORING}
         if self.state in vision_gated_states and self.use_recent_vision_cmd():

@@ -19,11 +19,10 @@
   <exec_depend>python3-pip</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>cv_bridge</exec_depend>
-  <!-- Optional: only needed for explore_node/patrol_node's Nav2 map-pose
-       features (scripts/install_slam_nav2.sh). Both are imported in a
-       try/except and degrade gracefully if absent, so this is not a hard
-       build/runtime requirement for the rest of the package. -->
-  <exec_depend>nav2_msgs</exec_depend>
+  <!-- Optional: only needed for visual_odom_node's odom->base_link TF
+       broadcast. Imported in a try/except and degrades gracefully if
+       absent, so this is not a hard build/runtime requirement for the
+       rest of the package. -->
   <exec_depend>tf2_ros</exec_depend>
 
   <test_depend>ament_copyright</test_depend>

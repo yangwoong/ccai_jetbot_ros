@@ -8,9 +8,9 @@ class LocationStore:
     sequence of timed move steps used to reach it (no odometry/IMU for real
     coordinates), plus an optional set of ORB visual features captured at that
     spot so arrival can be visually confirmed instead of trusted blindly from
-    dead-reckoning alone (which drifts), plus an optional SLAM map pose
-    (x, y, yaw in the `map` frame) captured when a Visual SLAM map exists -
-    see explore_node.py/patrol_node.py's frontier exploration integration.
+    dead-reckoning alone (which drifts), plus an optional odometry pose
+    (x, y, yaw in the `odom` frame) captured from visual_odom_node.py when
+    it's running - see patrol_node.py's POSE_GOAL point-to-point controller.
     Persisted to a JSON file so labels survive a restart.
     """
 

@@ -80,84 +80,41 @@
 
 - **자동 지역 탐색/라벨링과의 통합**: SLAM 지도가 안정적으로 검증되면, 지금은 시각 특징/타이밍 기반인 위치 저장을 그 좌표계 위에 앉히는 방식으로 재설계할 수 있습니다.
 
-## SLAM/Nav2 (2026-07-24 ~, 실험적 — 아직 이 하드웨어에서 검증 안 됨)
+## SLAM/Nav2 포기 → 경량 커스텀 좌표 컨트롤러로 전환 (2026-07-24)
 
-사용자 요청으로 `rtabmap_ros`(RGB-D SLAM) + `nav2`(경로 계획/주행) 연동의 뼈대를 추가했습니다. **중요: 이건 반응형 `depth_nav_node` 순찰(위 §)을 대체하는 게 아니라 그 위에 얹는 별도의 실험적 기능이고, 기본값은 꺼져 있어서(`CCAI_ENABLE_SLAM=0`, `CCAI_ENABLE_NAV2=0`) 아무것도 안 건드리는 한 기존 동작에 영향이 없습니다.**
+`rtabmap_ros`/`nav2`(`navigation2`, `nav2_bringup`)/`robot_localization` 4개 패키지 모두 이 이미지의 apt 저장소에 **없는 것으로 확정**됐습니다(`scripts/install_slam_nav2.sh` 실행 결과, 전부 `E: Unable to locate package`). 이 이미지는 ROS2 Humble을 bionic에 백포트한 커스텀 조합이라 흔한 패키지도 종종 빠져 있는데(`xacro`/`diagnostic_updater` 전례), 이번엔 그 빠진 패키지가 각각 수십 개 하위 패키지짜리 큰 스택(`nav2`)이거나 g2o/GTSAM/PCL 같은 무거운 C++ 코어(`rtabmap`)를 필요로 해서, Jetson Nano 4GB RAM으로 소스 빌드를 시도하는 건(이미 pycuda/librealsense2 빌드에서 여러 번 겪은 메모리 문제 감안) 이번 세션의 "한 패키지씩 대응" 전례와는 위험도가 다르다고 판단했습니다.
 
-### 왜 아직 "완성"이 아닌지 솔직하게
+**사용자가 명시적으로 선택한 방향**: "경량 대안: 직접 만든 좌표 컨트롤러." Nav2/rtabmap 전체를 대체하는 대신, 이 프로젝트 자체에서 다음 세 가지를 새로 구현했습니다.
 
-- **패키지 설치 여부 자체가 미확인**: 이 이미지는 ROS2 Humble을 bionic에 백포트한 커스텀 조합이라, `xacro`/`diagnostic_updater`처럼 흔한 패키지도 apt에 없었던 전례가 있습니다(`docs/vision_and_alerts.md` §21 참고). `rtabmap_ros`/`nav2`는 각각 수십 개 패키지짜리 큰 스택이라, apt에 없을 경우 그 전부를 자동으로 소스 빌드하는 건 현실적이지 않습니다 — `scripts/install_slam_nav2.sh`가 apt 설치를 시도하고 뭐가 없는지 정확히 보고하도록만 만들었고, 없는 패키지가 나오면 그때부터 하나씩(xacro/diagnostic_updater 때와 같은 방식으로) 대응해야 합니다.
-- **오도메트리가 시각 오도메트리뿐**: 휠 인코더가 없어서 rtabmap의 RGB-D 시각 오도메트리에만 의존합니다. 텍스처가 적은 바닥/조명 변화에서 드리프트가 클 수 있습니다.
-- **`nav2_params.yaml`은 튜닝 전 시작점**: `ccai_jetbot_patrol/config/nav2_params.yaml`은 이 로봇의 대략적인 크기/속도(반경 0.12m, 최대 속도 0.06m/s)로 채운 합리적인 초기값이지, 실기 테스트로 검증된 값이 아닙니다.
-- **런치 인자 이름 미검증**: `patrol.launch.py`의 `rtabmap_launch`/`nav2_bringup` include에 쓴 인자 이름(`depth_topic`, `visual_odometry` 등)은 rtabmap_ros의 일반적인 관례를 따랐지만, 실제 설치된 버전에 따라 이름이 다를 수 있습니다.
+1. **`visual_odom_node.py`(신규)**: D435i의 컬러+정렬된깊이 프레임으로 직접 만든 RGB-D 시각 오도메트리. ORB 특징점 매칭 → 깊이로 3D 역투영 → Kabsch 알고리즘(SVD 기반 강체변환 추정)으로 프레임 간 카메라 이동을 구해 누적 `(x, y, yaw)` 포즈를 `/ccai/odom_pose`로 발행하고 `odom`→`base_link` TF도 방송합니다. **루프 클로저도, 포즈 그래프 최적화도, 점유 격자 지도도 없는 순수 프레임 간 오도메트리라 시간이 지나면 반드시 드리프트합니다** — 한 세션 안에서 "대략 원래 자리로 돌아가는" 용도지, 튜닝된 진짜 SLAM 스택의 정확도를 대신하지 못합니다.
+2. **`patrol_node`의 점-대-점 컨트롤러 (`PatrolState.POSE_GOAL`)**: 목표 좌표까지 방향 오차가 크면 제자리 회전으로 먼저 정렬하고, 아니면 목표에 가까워질수록 속도를 줄이며 전진 + 소폭 방향 보정하는 단순 비례 제어(`compute_steering_twist`/`compute_pose_goal_twist`). `depth_nav_node`의 `obstacle_now` 신호를 안전 우선순위로 확인해서, 실제 장애물이 감지되면 그 회피 명령이 이 컨트롤러의 명령을 덮어씁니다.
+3. **커버리지 기반 탐색 알고리즘 (`pick_explore_subgoal`/`compute_explore_twist`)**: rtabmap 없이는 진짜 점유 격자가 없으므로, 대신 시각 오도메트리 좌표를 굵은 격자 셀로 나눠 방문 횟수를 기록하고(`self.visited_cells`), 주기적으로 로봇 주변 여러 방향/지점 후보를 샘플링해서 **가장 덜 가본 셀**로 이어지는 후보를 골라 그 지점까지 위 점-대-점 컨트롤러로 이동합니다. 이게 원래 문제("좌우로 피하기만 하고 안 가본 길을 못 찾음")를 직접 겨냥한 부분 — 이제 탐색 중 이미 지나온 곳인지 아닌지를 실제로 구분합니다.
 
-### 설치 및 활성화 절차
+### 활성화 절차
 
 ```bash
-docker exec -it ccai-jetbot bash -c "cd /home/workspace/ccai_jetbot_ros && ./scripts/install_slam_nav2.sh"
+CCAI_ENABLE_VISUAL_ODOM=1 ./scripts/host_docker_run.sh
 ```
-
-- 성공하면 (`CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1 ./scripts/host_docker_run.sh`)로 컨테이너를 재생성해서 rtabmap+nav2를 활성화할 수 있습니다.
-- 실패(일부 패키지 apt에 없음)하면 로그를 그대로 공유해 주세요 — 어떤 패키지가 없는지에 따라 다음 대응이 달라집니다.
-
-### 구조
-
-- `base_link` → `camera_link` 정적 TF(현재는 항등 변환 placeholder — 실측 장착 오프셋으로 교체 필요).
-- `rtabmap_launch`가 D435i의 depth+color로 시각 오도메트리 + 점유 격자 지도 + `map`→`odom`→`base_link` TF를 생성(`--delete_db_on_start`로 매번 새 지도).
-- `nav2_bringup`의 `navigation_launch.py`(전체 `bringup_launch.py`가 아님 — `map_server`/`amcl`을 또 띄우면 rtabmap과 지도/위치추정 역할이 충돌하므로 계획/제어 계층만 사용)가 그 위에서 경로 계획/주행을 담당.
-- 장애물 정보는 D435i의 포인트클라우드(`/camera/camera/depth/color/points`)에서 옵니다 — `CCAI_ENABLE_NAV2=1`일 때만 realsense의 `pointcloud.enable`을 켜도록 `patrol.launch.py`에 반영해뒀습니다(끄면 불필요한 CPU/대역폭 낭비라서 Nav2 안 쓸 땐 꺼둠). 이 토픽이 실제로 원하는 포맷/주기로 나오는지는 실기 확인이 필요합니다.
-
-### 다음 단계로 검증해야 할 것 (실기 필요)
-
-1. `install_slam_nav2.sh` 실행 결과 확인.
-2. 성공 시 `CCAI_ENABLE_SLAM=1`만 먼저 켜고 rtabmap 단독으로 지도/오도메트리가 생성되는지(`ros2 topic echo /map --once`, `ros2 run tf2_tools view_frames` 등으로) 확인.
-3. 그다음 `CCAI_ENABLE_NAV2=1`도 켜서 `ros2 action send_goal /navigate_to_pose ...`로 좌표 기반 이동이 실제로 되는지 확인.
-
-## 프론티어 기반 자율탐색 알고리즘 + 지도 라벨링 + Nav2 순찰 (2026-07-24 ~, 실험적)
-
-기존 "자율탐색"(§21, `docs/vision_and_alerts.md`)은 depth_nav_node의 반응형 "열린 쪽으로 조향" 방식이라 **장애물은 피하지만 "아직 안 가본 곳"이라는 개념이 없어서**, 지도 없이는 같은 공간을 맴돌 수 있습니다. 사용자 요청으로 실제 알고리즘(프론티어 탐색)과 SLAM 지도, 지도 좌표 기반 라벨링/순찰을 연동했습니다. **이것도 SLAM/Nav2(위 절)와 마찬가지로 이 하드웨어에서 아직 실기 검증 전인 실험적 기능이고, 기본값은 전부 꺼져 있어서 아무것도 안 건드리면 기존 반응형 자율탐색이 그대로 동작합니다.**
-
-### 파이프라인
-
-```
-1. 알고리즘 자율탐색 (explore_node의 프론티어 탐색, Nav2로 주행)
-   ↓
-2. rtabmap이 동시에 map 제작 (점유 격자 + map→odom→base_link TF)
-   ↓
-3. 탐색 중 주기적으로 관리자에게 위치 이름 요청 → 관리자가 라벨 제공
-   → 그 순간의 map 좌표(x, y, yaw)를 LocationStore에 저장 (지도 위 라벨링)
-   ↓
-4. "정문으로 가"/"정문에 뭐 있는지 확인해줘" 같은 임무 시,
-   저장된 map 좌표가 있으면 Nav2 NavigateToPose로 실제 좌표 이동 (순찰/임무 수행)
-```
-
-### 구현
-
-- **`explore_node.py`** (신규 노드): `/map`(점유 격자)을 읽어 "이미 안 사실(free)"과 "아직 모름(unknown)"의 경계 셀(프론티어)을 찾고, 8-연결 클러스터링으로 노이즈를 걸러낸 뒤 로봇과 가장 가까운 충분히 큰 클러스터를 목표로 골라 Nav2 `NavigateToPose` 액션으로 보냅니다. 도착/실패하면 다음 프론티어를 찾고, 더 이상 프론티어가 없으면(`no_frontier_timeout_seconds` 동안 계속 없으면) "탐색 완료"를 이벤트로 알립니다. `/ccai/status`로 현재 상태가 `exploring`이 아니면 자동으로 목표를 취소하고 대기하고, `/ccai/explore_pause`(Bool)를 구독해서 라벨 응답 대기 중에는 새 목표를 안 보냅니다.
-- **지도 좌표 라벨링**: `patrol_node`가 라벨 응답을 받으면(기존 §21 흐름 그대로) 시각 특징 캡처에 더해 `tf2_ros`로 `map`→`base_link` 변환을 조회해서 `(x, y, yaw)`를 `LocationStore`에 함께 저장합니다(`locations.py`의 `pose` 필드, `set_pose`/`get_pose`). tf2/Nav2가 없으면(기본 상태) 이 부분은 조용히 건너뛰고 기존 시각 특징 저장만 동작합니다.
-- **지도 좌표로 실제 이동**: `patrol_node.start_replay()`가 위치에 저장된 `pose`가 있고 Nav2 액션 서버가 응답하면, 기존 타임드 무브 시퀀스 재생 대신 **실제 `NavigateToPose` 목표를 Nav2로 보내서** 그 좌표까지 이동합니다. 도착하면 기존과 동일하게 시각 대조(§11) + VLM 질문 응답을 수행합니다. `pose`가 없거나 Nav2가 없으면 기존 방식(타임드 재생 → 시각 전용 위치는 제자리 확인)으로 자동 폴백 — 새 기능이 실패해도 예전 동작이 그대로 안전망이 됩니다.
-- **주행 소유권 충돌 방지**: `explore_node`(그리고 지도 좌표 이동 중인 `patrol_node`)가 실제로 Nav2를 통해 `/cmd_vel`을 발행하는 동안에는, `patrol_node.drive_loop()`가 `PatrolState.NAV2_GOAL` 상태와 `explore_frontier_mode: true`일 때의 `EXPLORING` 상태에서 **아무것도 발행하지 않고 완전히 양보**하도록 만들었습니다(정지 명령조차 안 보냄 — 안 그러면 Nav2의 지속적인 `/cmd_vel` 발행과 경합해서 로봇이 떨림/오동작할 수 있음).
-
-### 활성화 절차 (전부 명시적으로 켜야 함 — 하나라도 빠지면 예전 방식 그대로)
-
 ```yaml
 # config/robot.yaml
 patrol_node:
   ros__parameters:
-    explore_frontier_mode: true   # depth_nav_node 대신 explore_node/Nav2가 EXPLORING을 주행
-explore_node:
+    explore_frontier_mode: true   # true면 EXPLORING이 커버리지 탐색 알고리즘으로 주행, false면 기존 반응형 그대로
+visual_odom_node:
   ros__parameters:
     enabled: true
 ```
-```bash
-CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1 CCAI_ENABLE_EXPLORE_FRONTIER=1 ./scripts/host_docker_run.sh
-```
+
+둘 다 기본값이 꺼져 있어서, 아무것도 건드리지 않으면 기존 반응형 `depth_nav_node` 순찰이 그대로 동작합니다(안전망 유지).
+
+"정문으로 가"/"정문에 뭐 있는지 확인해줘" 같은 임무는 `patrol_node.start_replay()`가 저장된 위치에 `pose`가 있고 최근 오도메트리 신호(`has_recent_odom()`, 기본 2초 이내)가 있으면 위 점-대-점 컨트롤러(`POSE_GOAL`)로 실제 좌표까지 이동합니다. `pose`가 없거나 오도메트리가 끊겼으면 기존 타임드 재생/시각 전용 위치 확인으로 자동 폴백합니다.
 
 ### 아직 검증 안 된 것 (정직하게)
 
-- `explore_node`의 프론티어 탐색 로직 자체는 표준 알고리즘(m-explore/explore_lite 등에서 쓰는 방식과 동일한 원리)이지만, 이 로봇/이 지도 해상도/이 환경에서 실제로 잘 동작하는지는 실기 테스트가 필요합니다.
-- `NavigateToPose` 액션의 정확한 인터페이스(필드명 등)는 표준 `nav2_msgs`를 따랐지만, 실제 설치된 Nav2 버전에 따라 미세한 차이가 있을 수 있습니다.
-- 지도 좌표 저장/재사용은 SLAM이 매번 `--delete_db_on_start`로 새 지도를 시작하므로, **컨테이너를 재시작하면 이전에 저장한 좌표는 새 지도의 좌표계와 안 맞을 수 있습니다** — 지도가 리셋되면 좌표 기반 위치도 다시 가르쳐야 합니다(영구 지도 유지가 필요하면 `rtabmap_args`에서 `--delete_db_on_start`를 빼고 기존 DB를 재사용하도록 바꿔야 하는데, 이것도 실기 검증 필요).
+- **카메라↔로봇 축 매핑 미검증**: 카메라 광학 좌표계(x=오른쪽, y=아래, z=전방)와 로봇 평면 좌표계(x=전방, y=왼쪽, yaw=위에서 봤을 때 반시계)의 대응이 실기에서 검증되지 않았습니다. 방향이 반대로 나오면 `visual_odom_node`의 `yaw_sign`/`lateral_sign`/`forward_sign` 파라미터(기본 전부 `1.0`)를 `-1.0`으로 뒤집어서 조정해야 합니다.
+- **드리프트 정도 미측정**: ORB 매칭+Kabsch 정확도가 이 조명/텍스처 환경에서 실제로 얼마나 드리프트하는지 실기 데이터가 없습니다. `pose_goal_tolerance_m`(기본 0.15m)이 그 드리프트 대비 너무 빡빡하거나 헐거울 수 있습니다.
+- **커버리지 격자 파라미터 미튜닝**: `explore_visited_cell_size_m`(0.5m), `explore_step_distance_m`(0.8m), `explore_candidate_count`(8)는 첫 합리적 추정값이지 실기로 조정된 값이 아닙니다.
+- **`align_depth.enable` 대역폭/성능 영향 미확인**: D435i가 컬러+깊이+정렬 파이프라인을 동시에 돌릴 때의 USB 대역폭 여유는 실측하지 않았습니다(과거 "USB CAM overflow" 전례 있음 - 위 §D435i 도입 참고).
 
 ## 관련 문서
 

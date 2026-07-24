@@ -134,7 +134,7 @@ class DepthNavNode(Node):
         self.last_signals = signals
         self.last_depth_frame = depth
 
-        drives_forward = self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = self.mode in ("patrolling", "exploring", "pose_goal") or (self.mode == "manual_drive" and self.target == "move_forward")
         if drives_forward:
             twist, detail = self.compute_patrol_command(signals)
             self.last_detail = detail
@@ -363,7 +363,7 @@ class DepthNavNode(Node):
             self.get_logger().debug("depth debug frame draw failed: {0}".format(exc))
 
     def watchdog(self) -> None:
-        drives_forward = self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = self.mode in ("patrolling", "exploring", "pose_goal") or (self.mode == "manual_drive" and self.target == "move_forward")
         if not drives_forward:
             return
         timeout = float(self.get_parameter("min_valid_frame_seconds").value)
@@ -373,7 +373,14 @@ class DepthNavNode(Node):
             self.publish_event_throttled("D435i depth frames stopped arriving, stopping motion", key="depth_camera")
 
     def publish_status(self, state: str, detail: str = "", stop: bool = False) -> None:
-        payload = {"state": state, "detail": detail, "stop": stop, "mode": self.mode, "target": self.target}
+        # obstacle_now lets other nodes (patrol_node's point-to-point
+        # controller) check "is it safe to drive forward right now" directly
+        # instead of string-parsing `detail`.
+        obstacle_now = bool(self.last_signals["obstacle_now"]) if self.last_signals is not None else False
+        payload = {
+            "state": state, "detail": detail, "stop": stop, "mode": self.mode, "target": self.target,
+            "obstacle_now": obstacle_now,
+        }
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 
     def publish_event(self, text: str) -> None:

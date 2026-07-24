@@ -26,12 +26,12 @@ else
 fi
 
 CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL:-1}"
-# SLAM/Nav2 are a large, experimental, opt-in addition (scripts/install_slam_nav2.sh)
-# on top of the reactive depth_nav_node patrol that remains the default - default
-# off regardless of CCAI_SAFE_START, unlike CCAI_ENABLE_DEPTH_NAV above.
-CCAI_ENABLE_SLAM="${CCAI_ENABLE_SLAM:-0}"
-CCAI_ENABLE_NAV2="${CCAI_ENABLE_NAV2:-0}"
-CCAI_ENABLE_EXPLORE_FRONTIER="${CCAI_ENABLE_EXPLORE_FRONTIER:-0}"
+# Lightweight custom RGB-D visual odometry (visual_odom_node.py) - opt-in
+# addition on top of the reactive depth_nav_node patrol that remains the
+# default - default off regardless of CCAI_SAFE_START, unlike
+# CCAI_ENABLE_DEPTH_NAV above. Adopted instead of rtabmap_ros/Nav2, which are
+# confirmed unavailable via apt on this image (scripts/install_slam_nav2.sh).
+CCAI_ENABLE_VISUAL_ODOM="${CCAI_ENABLE_VISUAL_ODOM:-0}"
 CCAI_ENABLE_LLM="${CCAI_ENABLE_LLM:-1}"
 CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB:-1}"
 # Telegram touches no hardware/camera/motor, so - unlike CCAI_ENABLE_HARDWARE/
@@ -128,9 +128,7 @@ docker run -d \
   -e CCAI_ENABLE_PATROL="${CCAI_ENABLE_PATROL}" \
   -e CCAI_ENABLE_VLM="${CCAI_ENABLE_VLM}" \
   -e CCAI_ENABLE_DEPTH_NAV="${CCAI_ENABLE_DEPTH_NAV}" \
-  -e CCAI_ENABLE_SLAM="${CCAI_ENABLE_SLAM}" \
-  -e CCAI_ENABLE_NAV2="${CCAI_ENABLE_NAV2}" \
-  -e CCAI_ENABLE_EXPLORE_FRONTIER="${CCAI_ENABLE_EXPLORE_FRONTIER}" \
+  -e CCAI_ENABLE_VISUAL_ODOM="${CCAI_ENABLE_VISUAL_ODOM}" \
   -e CCAI_ENABLE_LLM="${CCAI_ENABLE_LLM}" \
   -e CCAI_ENABLE_WEB="${CCAI_ENABLE_WEB}" \
   -e CCAI_ENABLE_TELEGRAM="${CCAI_ENABLE_TELEGRAM}" \
@@ -160,6 +158,6 @@ docker run -d \
   bash -c "./scripts/container_run_patrol.sh"
 
 echo "started ${CONTAINER_NAME}"
-echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} depth_nav=${CCAI_ENABLE_DEPTH_NAV} slam=${CCAI_ENABLE_SLAM} nav2=${CCAI_ENABLE_NAV2} explore_frontier=${CCAI_ENABLE_EXPLORE_FRONTIER} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
+echo "safe_start=${CCAI_SAFE_START} hardware=${CCAI_ENABLE_HARDWARE} camera=${CCAI_ENABLE_CAMERA} camera_mode=${CCAI_CAMERA_MODE} camera_device=${CCAI_CAMERA_DEVICE:-auto} camera_url=${CCAI_CAMERA_URL:-none} camera_size=${CCAI_CAMERA_WIDTH:-config}x${CCAI_CAMERA_HEIGHT:-config} camera_fps=${CCAI_CAMERA_FPS:-config} camera_retry_limit=${CCAI_CAMERA_RETRY_LIMIT:-0} vision=${CCAI_ENABLE_VISION} vlm=${CCAI_ENABLE_VLM} depth_nav=${CCAI_ENABLE_DEPTH_NAV} visual_odom=${CCAI_ENABLE_VISUAL_ODOM} privileged=${DOCKER_PRIVILEGED} runtime_nvidia=${DOCKER_RUNTIME_NVIDIA} force_build=${FORCE_BUILD_ON_RUN}"
 echo "logs: docker logs -f ${CONTAINER_NAME}"
 echo "web:  http://JETSON_IP:8080"

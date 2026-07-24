@@ -79,4 +79,8 @@ EOF
 fi
 
 echo "[ccai] All packages installed via apt successfully."
-echo "[ccai] Next: set CCAI_ENABLE_SLAM=1 (rtabmap) and/or CCAI_ENABLE_NAV2=1 (nav2) and recreate the container with host_docker_run.sh."
+echo "[ccai] Note: this project's navigation stack has since moved to a custom"
+echo "[ccai] lightweight controller (visual_odom_node + patrol_node's own"
+echo "[ccai] point-to-point/coverage logic) instead of rtabmap/Nav2 - see"
+echo "[ccai] docs/navigation_roadmap.md. These packages being installed here"
+echo "[ccai] doesn't wire anything up on its own."
