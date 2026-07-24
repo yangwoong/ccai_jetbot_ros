@@ -120,6 +120,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 
 docker run -d \
   --name "${CONTAINER_NAME}" \
+  --restart unless-stopped \
   --network host \
   -e ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}" \
   -e CCAI_ENABLE_HARDWARE="${CCAI_ENABLE_HARDWARE}" \

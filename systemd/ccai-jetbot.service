@@ -18,8 +18,11 @@ Environment=CCAI_SAFE_START=0
 ExecStartPre=+/home/roboat/work/ros2_ws/ccai_jetbot_ros/scripts/host_fix_nvargus_daemon.sh
 ExecStart=/home/roboat/work/ros2_ws/ccai_jetbot_ros/scripts/host_docker_run.sh
 ExecStop=/usr/bin/docker stop ccai-jetbot
-Restart=on-failure
-RestartSec=10
+; Type=oneshot doesn't allow Restart= (systemd refuses to even load the unit
+; if it's set - "Service has Restart= setting other than no, which isn't
+; allowed for Type=oneshot services"). host_docker_run.sh's own `docker run`
+; now passes --restart unless-stopped instead, so Docker itself restarts the
+; container if it crashes - equivalent resilience without violating oneshot.
 
 [Install]
 WantedBy=multi-user.target
