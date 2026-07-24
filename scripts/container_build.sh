@@ -16,6 +16,17 @@ else
   exit 1
 fi
 
+# D435i/librealsense2 support (see scripts/install_realsense_d435i.sh) - no-op
+# if that script was never run. Needed here too (not just at launch time) so
+# find_package(realsense2) succeeds if colcon ever needs to (re)configure
+# realsense2_camera - it's installed to a bind-mounted prefix rather than a
+# system path, so it won't be on the default search paths.
+if [ -f deps/librealsense/librealsense_env.sh ]; then
+  set +u
+  source deps/librealsense/librealsense_env.sh
+  set -u
+fi
+
 INSTALL_OS_DEPS="${INSTALL_OS_DEPS:-0}"
 
 if ! command -v colcon >/dev/null 2>&1; then

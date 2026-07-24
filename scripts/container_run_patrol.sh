@@ -34,4 +34,15 @@ fi
 set +u
 source install/setup.bash
 set -u
+
+# D435i/librealsense2 support (see scripts/install_realsense_d435i.sh) - no-op
+# if that script was never run. Needed for realsense2_camera_node to find
+# librealsense2.so at runtime, since it's installed to a bind-mounted prefix
+# rather than a system path (so it survives container recreation).
+if [ -f deps/librealsense/librealsense_env.sh ]; then
+  set +u
+  source deps/librealsense/librealsense_env.sh
+  set -u
+fi
+
 exec ros2 launch ccai_jetbot_patrol patrol.launch.py
