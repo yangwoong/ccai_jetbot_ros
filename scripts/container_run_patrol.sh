@@ -11,13 +11,20 @@ if [ -f .env ]; then
 fi
 
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
-# See ccai_jetbot_patrol/config/cyclonedds.xml for why this is needed - avoids
-# CycloneDDS's sequential participant-index port allocation, whose stale
-# state (persisted because /tmp is bind-mounted for the CSI camera) can be
-# exhausted after enough container restarts and start silently killing new
-# nodes (symptom seen: web_chat_node dying with "Failed to find a free
-# participant index for domain 0", robot otherwise running fine).
+# See ccai_jetbot_patrol/config/cyclonedds.xml for background - this alone
+# turned out NOT to be enough (same "Failed to find a free participant
+# index for domain 0" recurred with it in place, so either it isn't being
+# picked up or domain 0's state is broken in some other way). Belt and
+# suspenders: also move off domain 0 entirely onto a domain that has none of
+# whatever stale/exhausted state accumulated there - each ROS_DOMAIN_ID maps
+# to its own port range, so this is a genuinely clean slate regardless of
+# what's actually wrong with domain 0.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$(pwd)/ccai_jetbot_patrol/config/cyclonedds.xml}"
+echo "[ccai] ROS_DOMAIN_ID=${ROS_DOMAIN_ID} CYCLONEDDS_URI=${CYCLONEDDS_URI}"
+if [ ! -f "${CYCLONEDDS_URI#file://}" ]; then
+  echo "[ccai] WARNING: CYCLONEDDS_URI points at a file that doesn't exist: ${CYCLONEDDS_URI#file://}" >&2
+fi
 
 if [ -f /opt/ros/humble/setup.bash ]; then
   set +u
