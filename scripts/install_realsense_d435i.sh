@@ -17,13 +17,13 @@ set -euo pipefail
 #   docker exec -it ccai-jetbot bash
 #   scripts/install_realsense_d435i.sh
 #
-# NOTE ON VERSION PINNING: REALSENSE_TAG/REALSENSE_ROS_BRANCH below are best-
-# effort defaults, not guaranteed-current tag/branch names - IntelRealSense's
-# repos rename/retag over time and this was not verified against the live
-# repos from this environment. If a clone fails, check
-# https://github.com/IntelRealSense/librealsense/releases and
-# https://github.com/IntelRealSense/realsense-ros for the current release,
-# and rerun with e.g. REALSENSE_TAG=v2.xx.x REALSENSE_ROS_BRANCH=<branch> set.
+# NOTE ON VERSION PINNING: REALSENSE_TAG/REALSENSE_ROS_BRANCH/XACRO_BRANCH/
+# DIAGNOSTICS_BRANCH below are best-effort defaults, not guaranteed-current
+# tag/branch names - none of this was verified against the live repos from
+# this environment. If a clone fails, check the repo on GitHub for the
+# current release/branch and rerun with the matching env var set
+# (IntelRealSense/librealsense, IntelRealSense/realsense-ros, ros/xacro,
+# ros/diagnostics).
 #
 # RESUMING AFTER AN INTERRUPTION: safe to just rerun as-is. The clone is
 # skipped if deps/librealsense already exists, and `cmake --build` (make
@@ -139,14 +139,31 @@ if command -v rosdep >/dev/null 2>&1; then
   rosdep install --from-paths "${DEPS_DIR}/realsense-ros" --ignore-src -y --skip-keys="librealsense2" || true
 fi
 
-# rosdep's key database has no "bionic" (Ubuntu 18.04) mapping for these two -
-# this image runs ROS2 Humble backported onto bionic for L4T r32.7.1
-# compatibility, a combination upstream rosdep's OS tables don't cover, even
-# though the packages themselves are available via this image's ROS apt repo
-# under their normal names. Install them directly rather than through rosdep.
-echo "[ccai] Installing xacro/diagnostic_updater directly (rosdep has no bionic mapping for these)"
-apt-get install -y ros-humble-xacro ros-humble-diagnostic-updater || \
-  echo "[ccai] ros-humble-xacro/diagnostic_updater apt install failed - realsense2_camera/realsense2_description may fail to build below" >&2
+# Confirmed (not just a rosdep OS-mapping gap, an earlier assumption here
+# that turned out wrong): this image's ROS apt repo has no ros-humble-xacro
+# or ros-humble-diagnostic-updater package at all ("Unable to locate
+# package"). This image backports ROS2 Humble onto bionic (Ubuntu 18.04) for
+# L4T r32.7.1 compatibility, and these two apparently weren't built for that
+# combination. Build them from source instead, in the same workspace as
+# realsense-ros so colcon picks them up automatically alongside it.
+XACRO_BRANCH="${XACRO_BRANCH:-ros2}"
+DIAGNOSTICS_BRANCH="${DIAGNOSTICS_BRANCH:-ros2}"
+if [ ! -d "${DEPS_DIR}/xacro" ]; then
+  echo "[ccai] Cloning ros/xacro (${XACRO_BRANCH}) - no apt package for it on this image"
+  git clone --depth 1 --branch "${XACRO_BRANCH}" https://github.com/ros/xacro.git "${DEPS_DIR}/xacro"
+fi
+if [ ! -d "${DEPS_DIR}/diagnostics" ]; then
+  echo "[ccai] Cloning ros/diagnostics (${DIAGNOSTICS_BRANCH}) for diagnostic_updater/diagnostic_msgs - no apt package for it on this image"
+  git clone --depth 1 --branch "${DIAGNOSTICS_BRANCH}" https://github.com/ros/diagnostics.git "${DEPS_DIR}/diagnostics"
+fi
+if command -v rosdep >/dev/null 2>&1; then
+  echo "[ccai] Installing xacro/diagnostics' own package dependencies via rosdep"
+  rosdep install --from-paths "${DEPS_DIR}/xacro" "${DEPS_DIR}/diagnostics" --ignore-src -y || true
+fi
+# NOTE: as with librealsense/realsense-ros above, if THIS clone also hits a
+# missing-apt-package wall for one of its own transitive dependencies, the
+# same pattern applies - clone that dependency's repo into deps/ too. Check
+# the colcon build output below for which package failed and why.
 
 echo "[ccai] Building realsense-ros with colcon (this also happens automatically next time container_build.sh runs)"
 colcon build --symlink-install
