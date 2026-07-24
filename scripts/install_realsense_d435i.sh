@@ -24,6 +24,22 @@ set -euo pipefail
 # https://github.com/IntelRealSense/librealsense/releases and
 # https://github.com/IntelRealSense/realsense-ros for the current release,
 # and rerun with e.g. REALSENSE_TAG=v2.xx.x REALSENSE_ROS_BRANCH=<branch> set.
+#
+# RESUMING AFTER AN INTERRUPTION: safe to just rerun as-is. The clone is
+# skipped if deps/librealsense already exists, and `cmake --build` (make
+# underneath) only recompiles what's missing/changed, so a rerun resumes
+# rather than starts over - UNLESS the interruption was a hard kill mid-write
+# (e.g. OOM) that could leave a partial object file; if a rerun immediately
+# fails again in the same spot, wipe just the build directory (keeps the
+# cloned source, avoiding a re-clone) and rebuild clean:
+#   rm -rf deps/librealsense/build
+#   scripts/install_realsense_d435i.sh
+# A dropped `docker exec -it` session (SSH disconnect, terminal closed) also
+# kills the build since it's the session's foreground process - run it
+# detached so it survives that, e.g.:
+#   docker exec -d ccai-jetbot bash -c \
+#     "cd /home/workspace/ccai_jetbot_ros && ./scripts/install_realsense_d435i.sh > /tmp/realsense_install.log 2>&1"
+# then check progress with: docker exec ccai-jetbot tail -f /tmp/realsense_install.log
 
 cd "$(dirname "$0")/.."
 
@@ -66,7 +82,12 @@ else
     -DBUILD_GRAPHICAL_EXAMPLES=false \
     -DBUILD_PYTHON_BINDINGS=false \
     -DCMAKE_BUILD_TYPE=Release
-  cmake --build "${DEPS_DIR}/librealsense/build" -- -j"$(nproc)"
+  # Jetson Nano has only 4GB RAM; librealsense's larger C++ translation units
+  # (each easily 500MB-1GB+ while compiling) can OOM-kill the build under
+  # -j$(nproc) (4 parallel jobs). Defaulting to 2 trades some speed for not
+  # getting silently killed partway through. Override with
+  # REALSENSE_BUILD_JOBS=N if this device has more headroom (e.g. swap).
+  cmake --build "${DEPS_DIR}/librealsense/build" -- -j"${REALSENSE_BUILD_JOBS:-2}"
   cmake --install "${DEPS_DIR}/librealsense/build"
   ldconfig
 
