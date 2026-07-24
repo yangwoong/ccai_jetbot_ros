@@ -11,17 +11,26 @@ if [ -f .env ]; then
 fi
 
 export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-1}"
-# See ccai_jetbot_patrol/config/cyclonedds.xml for background - this alone
-# turned out NOT to be enough (same "Failed to find a free participant
-# index for domain 0" recurred with it in place, so either it isn't being
-# picked up or domain 0's state is broken in some other way). Belt and
-# suspenders: also move off domain 0 entirely onto a domain that has none of
-# whatever stale/exhausted state accumulated there - each ROS_DOMAIN_ID maps
-# to its own port range, so this is a genuinely clean slate regardless of
-# what's actually wrong with domain 0.
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 export CYCLONEDDS_URI="${CYCLONEDDS_URI:-file://$(pwd)/ccai_jetbot_patrol/config/cyclonedds.xml}"
-echo "[ccai] ROS_DOMAIN_ID=${ROS_DOMAIN_ID} CYCLONEDDS_URI=${CYCLONEDDS_URI}"
+
+# Both of the above (cyclonedds.xml's ParticipantIndex=none, and moving off
+# domain 0) turned out NOT to fix "Failed to find a free participant index" -
+# the exact same failure recurred verbatim on domain 42 too, which rules out
+# stale per-domain state as the cause. The log showed why: this container's
+# loopback interface isn't multicast-capable ("selected interface 'lo' is not
+# multicast-capable: disabling multicast"), so CycloneDDS falls back to
+# unicast-only discovery - and something about that fallback path with 11
+# nodes starting at once here can't allocate participants reliably. Rather
+# than keep chasing CycloneDDS internals, switch RMW implementations
+# entirely to sidestep this specific component: FastDDS doesn't use this
+# participant-index allocation scheme at all.
+if find /opt/ros/humble -maxdepth 4 -name 'librmw_fastrtps_cpp.so' 2>/dev/null | grep -q .; then
+  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+else
+  echo "[ccai] WARNING: rmw_fastrtps_cpp not found under /opt/ros/humble - staying on default RMW (cyclonedds), which is known-broken here for many-node startup" >&2
+fi
+echo "[ccai] ROS_DOMAIN_ID=${ROS_DOMAIN_ID} RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-<default>} CYCLONEDDS_URI=${CYCLONEDDS_URI}"
 if [ ! -f "${CYCLONEDDS_URI#file://}" ]; then
   echo "[ccai] WARNING: CYCLONEDDS_URI points at a file that doesn't exist: ${CYCLONEDDS_URI#file://}" >&2
 fi
