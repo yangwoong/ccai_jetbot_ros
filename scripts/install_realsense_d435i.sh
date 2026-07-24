@@ -126,6 +126,15 @@ if command -v rosdep >/dev/null 2>&1; then
   rosdep install --from-paths "${DEPS_DIR}/realsense-ros" --ignore-src -y --skip-keys="librealsense2" || true
 fi
 
+# rosdep's key database has no "bionic" (Ubuntu 18.04) mapping for these two -
+# this image runs ROS2 Humble backported onto bionic for L4T r32.7.1
+# compatibility, a combination upstream rosdep's OS tables don't cover, even
+# though the packages themselves are available via this image's ROS apt repo
+# under their normal names. Install them directly rather than through rosdep.
+echo "[ccai] Installing xacro/diagnostic_updater directly (rosdep has no bionic mapping for these)"
+apt-get install -y ros-humble-xacro ros-humble-diagnostic-updater || \
+  echo "[ccai] ros-humble-xacro/diagnostic_updater apt install failed - realsense2_camera/realsense2_description may fail to build below" >&2
+
 echo "[ccai] Building realsense-ros with colcon (this also happens automatically next time container_build.sh runs)"
 colcon build --symlink-install
 
