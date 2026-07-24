@@ -8,8 +8,10 @@ class LocationStore:
     sequence of timed move steps used to reach it (no odometry/IMU for real
     coordinates), plus an optional set of ORB visual features captured at that
     spot so arrival can be visually confirmed instead of trusted blindly from
-    dead-reckoning alone (which drifts). Persisted to a JSON file so labels
-    survive a restart.
+    dead-reckoning alone (which drifts), plus an optional SLAM map pose
+    (x, y, yaw in the `map` frame) captured when a Visual SLAM map exists -
+    see explore_node.py/patrol_node.py's frontier exploration integration.
+    Persisted to a JSON file so labels survive a restart.
     """
 
     def __init__(self, path: str) -> None:
@@ -29,12 +31,13 @@ class LocationStore:
             if isinstance(value, list):
                 # Pre-existing file from before visual features were added:
                 # a bare step list with no features yet.
-                self.locations[label] = {"steps": value, "features": "", "keypoints": 0}
+                self.locations[label] = {"steps": value, "features": "", "keypoints": 0, "pose": None}
             elif isinstance(value, dict):
                 self.locations[label] = {
                     "steps": value.get("steps", []),
                     "features": value.get("features", ""),
                     "keypoints": value.get("keypoints", 0),
+                    "pose": value.get("pose"),
                 }
 
     def save(self) -> None:
@@ -50,14 +53,21 @@ class LocationStore:
             "steps": steps,
             "features": existing.get("features", ""),
             "keypoints": existing.get("keypoints", 0),
+            "pose": existing.get("pose"),
         }
         self.save()
 
     def set_features(self, label: str, features: str, keypoints: int) -> None:
         if label not in self.locations:
-            self.locations[label] = {"steps": [], "features": "", "keypoints": 0}
+            self.locations[label] = {"steps": [], "features": "", "keypoints": 0, "pose": None}
         self.locations[label]["features"] = features
         self.locations[label]["keypoints"] = keypoints
+        self.save()
+
+    def set_pose(self, label: str, x: float, y: float, yaw: float) -> None:
+        if label not in self.locations:
+            self.locations[label] = {"steps": [], "features": "", "keypoints": 0, "pose": None}
+        self.locations[label]["pose"] = {"x": x, "y": y, "yaw": yaw}
         self.save()
 
     def get(self, label: str) -> List[dict]:
@@ -65,6 +75,9 @@ class LocationStore:
 
     def get_features(self, label: str) -> Optional[str]:
         return self.locations.get(label, {}).get("features") or None
+
+    def get_pose(self, label: str) -> Optional[dict]:
+        return self.locations.get(label, {}).get("pose")
 
     def names(self) -> List[str]:
         return list(self.locations.keys())

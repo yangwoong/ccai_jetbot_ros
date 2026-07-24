@@ -112,7 +112,52 @@ docker exec -it ccai-jetbot bash -c "cd /home/workspace/ccai_jetbot_ros && ./scr
 1. `install_slam_nav2.sh` 실행 결과 확인.
 2. 성공 시 `CCAI_ENABLE_SLAM=1`만 먼저 켜고 rtabmap 단독으로 지도/오도메트리가 생성되는지(`ros2 topic echo /map --once`, `ros2 run tf2_tools view_frames` 등으로) 확인.
 3. 그다음 `CCAI_ENABLE_NAV2=1`도 켜서 `ros2 action send_goal /navigate_to_pose ...`로 좌표 기반 이동이 실제로 되는지 확인.
-4. 확인되면 `patrol_node`/`LocationStore`와의 통합(좌표 기반 위치 저장, "정문으로 가"를 Nav2 목표로 변환)은 별도 작업으로 이어서 진행.
+
+## 프론티어 기반 자율탐색 알고리즘 + 지도 라벨링 + Nav2 순찰 (2026-07-24 ~, 실험적)
+
+기존 "자율탐색"(§21, `docs/vision_and_alerts.md`)은 depth_nav_node의 반응형 "열린 쪽으로 조향" 방식이라 **장애물은 피하지만 "아직 안 가본 곳"이라는 개념이 없어서**, 지도 없이는 같은 공간을 맴돌 수 있습니다. 사용자 요청으로 실제 알고리즘(프론티어 탐색)과 SLAM 지도, 지도 좌표 기반 라벨링/순찰을 연동했습니다. **이것도 SLAM/Nav2(위 절)와 마찬가지로 이 하드웨어에서 아직 실기 검증 전인 실험적 기능이고, 기본값은 전부 꺼져 있어서 아무것도 안 건드리면 기존 반응형 자율탐색이 그대로 동작합니다.**
+
+### 파이프라인
+
+```
+1. 알고리즘 자율탐색 (explore_node의 프론티어 탐색, Nav2로 주행)
+   ↓
+2. rtabmap이 동시에 map 제작 (점유 격자 + map→odom→base_link TF)
+   ↓
+3. 탐색 중 주기적으로 관리자에게 위치 이름 요청 → 관리자가 라벨 제공
+   → 그 순간의 map 좌표(x, y, yaw)를 LocationStore에 저장 (지도 위 라벨링)
+   ↓
+4. "정문으로 가"/"정문에 뭐 있는지 확인해줘" 같은 임무 시,
+   저장된 map 좌표가 있으면 Nav2 NavigateToPose로 실제 좌표 이동 (순찰/임무 수행)
+```
+
+### 구현
+
+- **`explore_node.py`** (신규 노드): `/map`(점유 격자)을 읽어 "이미 안 사실(free)"과 "아직 모름(unknown)"의 경계 셀(프론티어)을 찾고, 8-연결 클러스터링으로 노이즈를 걸러낸 뒤 로봇과 가장 가까운 충분히 큰 클러스터를 목표로 골라 Nav2 `NavigateToPose` 액션으로 보냅니다. 도착/실패하면 다음 프론티어를 찾고, 더 이상 프론티어가 없으면(`no_frontier_timeout_seconds` 동안 계속 없으면) "탐색 완료"를 이벤트로 알립니다. `/ccai/status`로 현재 상태가 `exploring`이 아니면 자동으로 목표를 취소하고 대기하고, `/ccai/explore_pause`(Bool)를 구독해서 라벨 응답 대기 중에는 새 목표를 안 보냅니다.
+- **지도 좌표 라벨링**: `patrol_node`가 라벨 응답을 받으면(기존 §21 흐름 그대로) 시각 특징 캡처에 더해 `tf2_ros`로 `map`→`base_link` 변환을 조회해서 `(x, y, yaw)`를 `LocationStore`에 함께 저장합니다(`locations.py`의 `pose` 필드, `set_pose`/`get_pose`). tf2/Nav2가 없으면(기본 상태) 이 부분은 조용히 건너뛰고 기존 시각 특징 저장만 동작합니다.
+- **지도 좌표로 실제 이동**: `patrol_node.start_replay()`가 위치에 저장된 `pose`가 있고 Nav2 액션 서버가 응답하면, 기존 타임드 무브 시퀀스 재생 대신 **실제 `NavigateToPose` 목표를 Nav2로 보내서** 그 좌표까지 이동합니다. 도착하면 기존과 동일하게 시각 대조(§11) + VLM 질문 응답을 수행합니다. `pose`가 없거나 Nav2가 없으면 기존 방식(타임드 재생 → 시각 전용 위치는 제자리 확인)으로 자동 폴백 — 새 기능이 실패해도 예전 동작이 그대로 안전망이 됩니다.
+- **주행 소유권 충돌 방지**: `explore_node`(그리고 지도 좌표 이동 중인 `patrol_node`)가 실제로 Nav2를 통해 `/cmd_vel`을 발행하는 동안에는, `patrol_node.drive_loop()`가 `PatrolState.NAV2_GOAL` 상태와 `explore_frontier_mode: true`일 때의 `EXPLORING` 상태에서 **아무것도 발행하지 않고 완전히 양보**하도록 만들었습니다(정지 명령조차 안 보냄 — 안 그러면 Nav2의 지속적인 `/cmd_vel` 발행과 경합해서 로봇이 떨림/오동작할 수 있음).
+
+### 활성화 절차 (전부 명시적으로 켜야 함 — 하나라도 빠지면 예전 방식 그대로)
+
+```yaml
+# config/robot.yaml
+patrol_node:
+  ros__parameters:
+    explore_frontier_mode: true   # depth_nav_node 대신 explore_node/Nav2가 EXPLORING을 주행
+explore_node:
+  ros__parameters:
+    enabled: true
+```
+```bash
+CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1 CCAI_ENABLE_EXPLORE_FRONTIER=1 ./scripts/host_docker_run.sh
+```
+
+### 아직 검증 안 된 것 (정직하게)
+
+- `explore_node`의 프론티어 탐색 로직 자체는 표준 알고리즘(m-explore/explore_lite 등에서 쓰는 방식과 동일한 원리)이지만, 이 로봇/이 지도 해상도/이 환경에서 실제로 잘 동작하는지는 실기 테스트가 필요합니다.
+- `NavigateToPose` 액션의 정확한 인터페이스(필드명 등)는 표준 `nav2_msgs`를 따랐지만, 실제 설치된 Nav2 버전에 따라 미세한 차이가 있을 수 있습니다.
+- 지도 좌표 저장/재사용은 SLAM이 매번 `--delete_db_on_start`로 새 지도를 시작하므로, **컨테이너를 재시작하면 이전에 저장한 좌표는 새 지도의 좌표계와 안 맞을 수 있습니다** — 지도가 리셋되면 좌표 기반 위치도 다시 가르쳐야 합니다(영구 지도 유지가 필요하면 `rtabmap_args`에서 `--delete_db_on_start`를 빼고 기존 DB를 재사용하도록 바꿔야 하는데, 이것도 실기 검증 필요).
 
 ## 관련 문서
 

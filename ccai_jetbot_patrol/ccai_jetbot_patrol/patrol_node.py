@@ -5,10 +5,24 @@ from enum import Enum
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from ccai_jetbot_patrol.locations import LocationStore
 from ccai_jetbot_patrol.mission import parse_mission_command
+
+# Both optional: only present once scripts/install_slam_nav2.sh has actually
+# installed Nav2/rtabmap. Degrade gracefully (map-pose features just stay
+# unavailable) rather than fail to import the whole node if they're missing -
+# same pattern as every other optional dependency in this project (pycuda,
+# librealsense, etc).
+try:
+    from rclpy.action import ActionClient
+    from nav2_msgs.action import NavigateToPose
+    import tf2_ros
+except Exception:  # pragma: no cover
+    ActionClient = None
+    NavigateToPose = None
+    tf2_ros = None
 
 
 class PatrolState(str, Enum):
@@ -22,6 +36,7 @@ class PatrolState(str, Enum):
     MANUAL_DRIVE = "manual_drive"
     REPLAYING = "replaying"
     EXPLORING = "exploring"
+    NAV2_GOAL = "nav2_goal"
 
 
 class PatrolNode(Node):
@@ -49,6 +64,17 @@ class PatrolNode(Node):
         # and how long it waits for that reply before giving up and moving on.
         self.declare_parameter("explore_label_interval_seconds", 45.0)
         self.declare_parameter("explore_label_timeout_seconds", 120.0)
+        # When true, EXPLORING yields driving entirely to explore_node's
+        # frontier algorithm (which drives via Nav2, publishing /cmd_vel
+        # directly) instead of depth_nav_node's reactive open-space-seeking.
+        # Only meaningful when explore_node/SLAM/Nav2 are actually enabled
+        # (CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1, explore_node.enabled: true)
+        # - set this true at the same time as those, or EXPLORING will just
+        # sit still with nothing driving it. Default false: the existing
+        # reactive patrol is completely unaffected unless explicitly opted in.
+        self.declare_parameter("explore_frontier_mode", False)
+        self.declare_parameter("map_frame", "map")
+        self.declare_parameter("base_frame", "base_link")
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -89,6 +115,25 @@ class PatrolNode(Node):
         # instead of being forced through command parsing, which has no
         # concept of "the next message is a label answer". See on_admin_text.
         self.create_subscription(String, "/ccai/admin_text", self.on_admin_text, 10)
+        # Tells explore_node to stop sending new Nav2 goals (and cancel the
+        # active one) while paused for a label reply - see
+        # tick_explore_labeling/on_admin_text. Harmless to publish even when
+        # explore_node isn't running (no subscriber, no-op).
+        self.explore_pause_pub = self.create_publisher(Bool, "/ccai/explore_pause", 10)
+
+        # Nav2/tf2 are optional (see the try/except import above) - only
+        # usable once scripts/install_slam_nav2.sh has installed them. When
+        # unavailable, map poses just never get captured/used and everything
+        # else (visual-feature-only locations, reactive patrol) works exactly
+        # as before - see request_location_feature_capture/start_replay.
+        self.tf_buffer = None
+        self.nav_client = None
+        self.nav_goal_handle = None
+        if tf2_ros is not None:
+            self.tf_buffer = tf2_ros.Buffer()
+            self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
+        if ActionClient is not None and NavigateToPose is not None:
+            self.nav_client = ActionClient(self, NavigateToPose, "navigate_to_pose")
 
         heartbeat = float(self.get_parameter("heartbeat_seconds").value)
         self.create_timer(heartbeat, self.publish_status)
@@ -160,6 +205,17 @@ class PatrolNode(Node):
         self.request_analysis(question, location=target)
 
     def start_replay(self, label: str, question: str) -> None:
+        pose = self.location_store.get_pose(label)
+        if pose is not None and self.nav_client is not None:
+            # A real SLAM map coordinate exists for this label (saved during
+            # frontier exploration - see on_admin_text) and Nav2 is available:
+            # drive there with an actual navigation goal instead of the old
+            # blind timed-move-sequence replay, which has no way to correct
+            # for drift. Falls through to that replay/inspect path below if
+            # this fails to even send (e.g. Nav2 not actually running despite
+            # nav_client existing, or no map yet).
+            if self.start_nav2_goal(label, question, pose):
+                return
         steps = self.location_store.get(label)
         if not steps:
             # This label was quick-saved (visual features only, no '기억 시작'
@@ -179,6 +235,64 @@ class PatrolNode(Node):
         self.current_target = label
         self.set_state(PatrolState.REPLAYING)
         self.publish_event(f"heading to {label} ({len(steps)} steps)")
+
+    def start_nav2_goal(self, label: str, question: str, pose: dict) -> bool:
+        """Send an actual Nav2 NavigateToPose goal to a stored map coordinate.
+        Returns False (caller should fall back to the timed-replay/inspect
+        path) if Nav2 isn't actually reachable right now - only send-failure
+        is checked synchronously here; acceptance/success/failure of the
+        goal itself is handled asynchronously in on_nav2_goal_response/result.
+        """
+        import math
+
+        if not self.nav_client.wait_for_server(timeout_sec=1.0):
+            self.publish_event(f"Nav2 action server not available - falling back for '{label}'")
+            return False
+        goal = NavigateToPose.Goal()
+        goal.pose.header.frame_id = str(self.get_parameter("map_frame").value)
+        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.pose.position.x = float(pose["x"])
+        goal.pose.pose.position.y = float(pose["y"])
+        yaw = float(pose.get("yaw", 0.0))
+        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
+        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+        self.current_target = label
+        self.replay_location = label
+        self.replay_question = question
+        self.set_state(PatrolState.NAV2_GOAL)
+        self.publish_event(f"'{label}' 지도 좌표로 Nav2 이동 시작 (x={pose['x']:.2f}, y={pose['y']:.2f})")
+        future = self.nav_client.send_goal_async(goal)
+        future.add_done_callback(self.on_nav2_goal_response)
+        return True
+
+    def on_nav2_goal_response(self, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self.publish_event(f"Nav2 goal 전송 실패: {exc}")
+            self.set_state(PatrolState.STOPPED)
+            return
+        if not goal_handle.accepted:
+            self.publish_event(f"Nav2가 '{self.replay_location}' 이동 목표를 거부했습니다")
+            self.set_state(PatrolState.STOPPED)
+            return
+        self.nav_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self.on_nav2_goal_result)
+
+    def on_nav2_goal_result(self, future) -> None:
+        self.nav_goal_handle = None
+        label = self.replay_location
+        question = self.replay_question
+        self.stop_motion()
+        self.publish_event(f"'{label}' 도착 (Nav2 이동 완료)")
+        stored_features = self.location_store.get_features(label)
+        if stored_features:
+            self.location_feature_request_pub.publish(String(data=json.dumps(
+                {"action": "match", "label": label, "descriptors": stored_features}, ensure_ascii=False,
+            )))
+        self.request_analysis(question, location=label)
+        self.set_state(PatrolState.STOPPED)
 
     def save_recorded_location(self, label: str) -> None:
         if not label:
@@ -249,10 +363,39 @@ class PatrolNode(Node):
         if now - self.explore_last_label_request_at > interval:
             self.awaiting_label = True
             self.explore_last_label_request_at = now
+            # stop_motion() covers reactive mode (depth_nav_node driving via
+            # /ccai/vision_cmd_vel through this node's own drive_loop);
+            # explore_pause covers frontier mode (explore_node driving via
+            # Nav2, which publishes /cmd_vel directly - this node's
+            # stop_motion() alone wouldn't stop that). Both are harmless
+            # no-ops in whichever mode isn't actually active.
             self.stop_motion()
+            self.explore_pause_pub.publish(Bool(data=True))
             self.publish_event(
                 "탐색 중 새 지점 발견 - 이 위치의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')"
             )
+
+    def lookup_map_pose(self):
+        """(x, y, yaw) of base_link in the map frame, or None if no SLAM map/TF
+        is available (Nav2/rtabmap not running, or not yet localized)."""
+        if self.tf_buffer is None:
+            return None
+        try:
+            import math
+
+            map_frame = str(self.get_parameter("map_frame").value)
+            base_frame = str(self.get_parameter("base_frame").value)
+            transform = self.tf_buffer.lookup_transform(map_frame, base_frame, rclpy.time.Time())
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            yaw = math.atan2(
+                2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
+            )
+            return translation.x, translation.y, yaw
+        except Exception as exc:
+            self.get_logger().debug(f"map pose lookup failed: {exc}")
+            return None
 
     def on_admin_text(self, msg: String) -> None:
         if self.state != PatrolState.EXPLORING or not self.awaiting_label:
@@ -268,8 +411,16 @@ class PatrolNode(Node):
                 self.location_store.set(label, [])
             self.publish_event(f"탐색 중 위치 라벨 저장: {label}")
             self.request_location_feature_capture(label)
+            pose = self.lookup_map_pose()
+            if pose is not None:
+                self.location_store.set_pose(label, pose[0], pose[1], pose[2])
+                self.publish_event(
+                    f"'{label}' 지도 좌표 저장됨 (x={pose[0]:.2f}, y={pose[1]:.2f}) - "
+                    "이 좌표로 나중에 실제 이동 가능"
+                )
         self.awaiting_label = False
         self.explore_last_label_request_at = time.monotonic()
+        self.explore_pause_pub.publish(Bool(data=False))
 
     def start_manual_move(self, kind: str, modifier: str = "") -> None:
         self.manual_kind = kind
@@ -379,6 +530,17 @@ class PatrolNode(Node):
 
     def drive_loop(self) -> None:
         self.tick_explore_labeling()
+
+        # These two states are driven by Nav2's own controller_server, which
+        # publishes /cmd_vel directly - this node must not publish anything at
+        # all here (not even a stop), or the two would fight over the same
+        # topic at similar rates. NAV2_GOAL: a one-off "go to this saved map
+        # coordinate" goal (see start_nav2_goal). EXPLORING+explore_frontier_mode:
+        # explore_node's frontier algorithm is driving via repeated Nav2 goals.
+        if self.state == PatrolState.NAV2_GOAL:
+            return
+        if self.state == PatrolState.EXPLORING and bool(self.get_parameter("explore_frontier_mode").value):
+            return
 
         twist = Twist()
         linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale

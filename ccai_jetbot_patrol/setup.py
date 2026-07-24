@@ -27,6 +27,7 @@ setup(
             "camera_node = ccai_jetbot_patrol.camera_node:main",
             "vision_nav_node = ccai_jetbot_patrol.vision_nav_node:main",
             "depth_nav_node = ccai_jetbot_patrol.depth_nav_node:main",
+            "explore_node = ccai_jetbot_patrol.explore_node:main",
             "vlm_client_node = ccai_jetbot_patrol.vlm_client_node:main",
             "llm_control_node = ccai_jetbot_patrol.llm_control_node:main",
             "web_chat_node = ccai_jetbot_patrol.web_chat_node:main",

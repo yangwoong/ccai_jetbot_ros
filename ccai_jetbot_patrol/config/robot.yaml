@@ -19,6 +19,28 @@ patrol_node:
     locations_file: "data/locations.json"
     explore_label_interval_seconds: 45.0
     explore_label_timeout_seconds: 120.0
+    # true only once explore_node + SLAM(rtabmap) + Nav2 are all actually
+    # running (CCAI_ENABLE_SLAM=1 CCAI_ENABLE_NAV2=1 CCAI_ENABLE_EXPLORE_FRONTIER=1) -
+    # see docs/navigation_roadmap.md. Leave false for the default reactive
+    # patrol (depth_nav_node driving EXPLORING directly).
+    explore_frontier_mode: false
+    map_frame: "map"
+    base_frame: "base_link"
+
+explore_node:
+  ros__parameters:
+    # true only alongside CCAI_ENABLE_EXPLORE_FRONTIER=1 at launch (this alone
+    # doesn't start the node - see launch/patrol.launch.py).
+    enabled: false
+    map_topic: "/map"
+    global_frame: "map"
+    robot_frame: "base_link"
+    frontier_min_size: 8
+    goal_min_distance_m: 0.5
+    no_frontier_timeout_seconds: 20.0
+    frontier_scan_interval_seconds: 2.0
+    nav2_action_wait_seconds: 2.0
+    event_throttle_seconds: 15.0
 
 jetbot_hardware_node:
   ros__parameters:

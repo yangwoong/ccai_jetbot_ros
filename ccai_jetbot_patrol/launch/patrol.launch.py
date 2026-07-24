@@ -186,6 +186,15 @@ def generate_launch_description():
                 ),
             }.items(),
         ))
+    if env_enabled("CCAI_ENABLE_EXPLORE_FRONTIER", False):
+        # Real frontier-based exploration (explore_node.py) instead of
+        # depth_nav_node's reactive "steer toward open space" heuristic during
+        # autonomous exploration - see explore_node.py's docstring. Only
+        # meaningful with CCAI_ENABLE_SLAM + CCAI_ENABLE_NAV2 both on; also
+        # set patrol_node's explore_frontier_mode: true in robot.yaml at the
+        # same time so patrol_node stops publishing its own /cmd_vel during
+        # EXPLORING and fully yields to Nav2.
+        nodes.append(Node(package="ccai_jetbot_patrol", executable="explore_node", name="explore_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_PATROL", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="patrol_node", name="patrol_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_VLM", True):
