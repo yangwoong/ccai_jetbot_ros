@@ -44,6 +44,10 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="follow_person", target="person", raw=message)
     if lowered in {"remember start", "위치 기억 시작", "기억 시작", "여기부터 기억해", "여기부터 기억"}:
         return MissionCommand(type="remember_start", raw=message)
+    if lowered in {"explore", "explore start", "자율탐색", "자율 탐색", "탐색 시작", "자율탐색 시작", "탐험 시작"}:
+        return MissionCommand(type="explore_start", raw=message)
+    if lowered in {"explore stop", "탐색 중지", "자율탐색 중지", "탐험 중지"}:
+        return MissionCommand(type="explore_stop", raw=message)
     if ("천천히" in lowered) and ("앞으로" in lowered or "전진" in lowered):
         return MissionCommand(type="move_forward", target="slow", raw=message)
     if ("천천히" in lowered) and ("뒤로" in lowered or "후진" in lowered):
@@ -75,6 +79,10 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="patrol_start", raw=message)
     if "순찰" in lowered and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
         return MissionCommand(type="patrol_stop", raw=message)
+    if ("탐색" in lowered or "탐험" in lowered) and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
+        return MissionCommand(type="explore_stop", raw=message)
+    if "탐색" in lowered or "탐험" in lowered:
+        return MissionCommand(type="explore_start", raw=message)
     if "복귀" in lowered or "충전소" in lowered:
         return MissionCommand(type="go_home", raw=message)
     if "따라" in lowered and ("사람" in lowered or "나" in lowered or "대상" in lowered):
@@ -143,6 +151,11 @@ def normalize_command_type(command_type: str) -> str:
         "remember_start": "remember_start",
         "remember_save": "remember_save",
         "save_location": "remember_save",
+        "explore": "explore_start",
+        "explore_start": "explore_start",
+        "start_explore": "explore_start",
+        "explore_stop": "explore_stop",
+        "stop_explore": "explore_stop",
     }
     return aliases.get(lowered, lowered)
 
@@ -151,7 +164,7 @@ def is_direct_robot_command(command: MissionCommand) -> bool:
     return command.type in {
         "status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person",
         "move_forward", "move_backward", "turn_left", "turn_right", "set_speed", "analyze",
-        "remember_start", "remember_save",
+        "remember_start", "remember_save", "explore_start", "explore_stop",
     }
 
 

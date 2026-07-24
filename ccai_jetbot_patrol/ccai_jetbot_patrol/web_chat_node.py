@@ -300,7 +300,13 @@ const camera = document.getElementById('camera');
 const visionDebug = document.getElementById('visionDebug');
 const depthDebug = document.getElementById('depthDebug');
 const visionDetail = document.getElementById('visionDetail');
+function isLogNearBottom() {
+  // A few px of slack so "close enough to the bottom" still counts - exact
+  // pixel equality after a DOM update is unreliable.
+  return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+}
 async function refresh() {
+  const stickToBottom = isLogNearBottom();
   const res = await fetch('/api/status');
   const data = await res.json();
   state.textContent = data.status.state || 'unknown';
@@ -309,7 +315,10 @@ async function refresh() {
   visionDetail.textContent = data.vision_status && data.vision_status.detail ? data.vision_status.detail : '';
   cameraState.textContent = data.camera_status && data.camera_status.backend ? `${data.camera_status.backend} ${data.camera_status.last_error || 'ok'}` : 'camera unknown';
   log.innerHTML = data.messages.map(m => `<p class="msg"><span class="src">${m.source}</span>${m.message}</p>`).join('');
-  log.scrollTop = log.scrollHeight;
+  // Only force-scroll if the admin was already at (or near) the bottom before
+  // this refresh - otherwise scrolling up to read older log lines got yanked
+  // back down every second by the next poll.
+  if (stickToBottom) log.scrollTop = log.scrollHeight;
 }
 function refreshCamera() {
   camera.src = '/api/camera.jpg?t=' + Date.now();

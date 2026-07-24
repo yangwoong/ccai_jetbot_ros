@@ -203,7 +203,7 @@ class VisionNavNode(Node):
             return
         frame = self.decode_frame(msg.data)
         drives_forward = bool(self.get_parameter("drive_enabled").value) and (
-            self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+            self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
         )
         if frame is None or self.is_invalid_frame(frame):
             self.publish_status("invalid_camera", stop=True)
@@ -779,7 +779,7 @@ class VisionNavNode(Node):
 
     def watchdog(self) -> None:
         drives_forward = bool(self.get_parameter("drive_enabled").value) and (
-            self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+            self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
         )
         if not (drives_forward or self.mode == "following_person"):
             return

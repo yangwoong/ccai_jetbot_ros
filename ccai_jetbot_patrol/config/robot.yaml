@@ -17,6 +17,8 @@ patrol_node:
     speed_ramp_min_factor: 0.35
     manual_drive_slow_factor: 0.5
     locations_file: "data/locations.json"
+    explore_label_interval_seconds: 45.0
+    explore_label_timeout_seconds: 120.0
 
 jetbot_hardware_node:
   ros__parameters:

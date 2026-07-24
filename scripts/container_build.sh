@@ -82,6 +82,16 @@ then
 elif [ -f "${PYCUDA_FAIL_MARKER}" ]; then
   echo "[ccai] skipping pycuda build - a previous attempt failed (marker: ${PYCUDA_FAIL_MARKER}). TensorRT YOLO path stays disabled; OpenCV DNN/HOG fallback is used instead. Delete that file to retry." >&2
 else
+  # The actual cause of the earlier xlocale.h failure: newer glibc merged
+  # xlocale.h into locale.h and dropped the old header entirely, but the
+  # numpy version pycuda pulls in (needed to build for this old Python 3.6)
+  # still #includes it unconditionally. This symlink is the standard,
+  # widely-documented workaround - restores the header numpy expects without
+  # patching numpy itself.
+  if [ ! -e /usr/include/xlocale.h ] && [ -e /usr/include/locale.h ]; then
+    echo "[ccai] symlinking /usr/include/xlocale.h -> locale.h (numpy build compat)"
+    ln -s /usr/include/locale.h /usr/include/xlocale.h
+  fi
   echo "[ccai] attempting pycuda install (capped at ${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}s)"
   if timeout "${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}" python3 -m pip install pycuda; then
     echo "[ccai] pycuda installed"

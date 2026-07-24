@@ -34,8 +34,10 @@ Allowed command types:
 - analyze: analyze the current camera view right now and report back
 - remember_start: begin recording the path driven from here so it can be saved as a named location
 - remember_save: save the current location under a name, whether or not remember_start was used first (if the user just says "here is X, remember/save it" with no prior recording, that's still remember_save - it will save the current view's visual features even without a travel path). Include target as the location name mentioned by the user (e.g. "정문", "작은방").
+- explore_start: begin autonomous exploration - the robot drives itself around avoiding obstacles, and periodically stops to ask the admin to name/label the current spot so it can build up a set of known locations over time.
+- explore_stop: stop autonomous exploration.
 - say: if no robot action is requested. Include text.
-JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|say","target":"","text":""}
+JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|explore_start|explore_stop|say","target":"","text":""}
 """
 
 

@@ -21,6 +21,7 @@ class PatrolState(str, Enum):
     MANUAL = "manual"
     MANUAL_DRIVE = "manual_drive"
     REPLAYING = "replaying"
+    EXPLORING = "exploring"
 
 
 class PatrolNode(Node):
@@ -43,6 +44,11 @@ class PatrolNode(Node):
         self.declare_parameter("speed_ramp_min_factor", 0.35)
         self.declare_parameter("manual_drive_slow_factor", 0.5)
         self.declare_parameter("locations_file", "data/locations.json")
+        # How often (seconds of exploring, not counting time spent awaiting a
+        # reply) the robot stops to ask the admin to name the current spot,
+        # and how long it waits for that reply before giving up and moving on.
+        self.declare_parameter("explore_label_interval_seconds", 45.0)
+        self.declare_parameter("explore_label_timeout_seconds", 120.0)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -64,6 +70,8 @@ class PatrolNode(Node):
         self.replay_step_started_at = 0.0
         self.replay_question = ""
         self.replay_location = ""
+        self.awaiting_label = False
+        self.explore_last_label_request_at = 0.0
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -75,6 +83,12 @@ class PatrolNode(Node):
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
         self.create_subscription(Twist, "/ccai/vision_cmd_vel", self.on_vision_cmd_vel, 10)
         self.create_subscription(String, "/ccai/location_feature_result", self.on_location_feature_result, 10)
+        # Raw admin chat text, subscribed directly (not via the parsed
+        # /ccai/mission_command) so a free-form location name typed in reply
+        # to a label request ("창고", "휴게실 앞" etc.) can be captured as-is
+        # instead of being forced through command parsing, which has no
+        # concept of "the next message is a label answer". See on_admin_text.
+        self.create_subscription(String, "/ccai/admin_text", self.on_admin_text, 10)
 
         heartbeat = float(self.get_parameter("heartbeat_seconds").value)
         self.create_timer(heartbeat, self.publish_status)
@@ -118,6 +132,13 @@ class PatrolNode(Node):
             self.publish_event("remembering location: recording moves until saved (e.g. '정문으로 저장해')")
         elif command.type == "remember_save":
             self.save_recorded_location(command.target)
+        elif command.type == "explore_start":
+            self.start_explore()
+        elif command.type == "explore_stop":
+            self.set_state(PatrolState.STOPPED)
+            self.stop_motion()
+            self.awaiting_label = False
+            self.publish_event("autonomous exploration stopped")
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
         else:
@@ -182,12 +203,73 @@ class PatrolNode(Node):
             )
         self.recording = False
         self.record_buffer = []
-        # Capture visual features of the current view too, so future arrivals at
+        self.request_location_feature_capture(label)
+
+    def request_location_feature_capture(self, label: str) -> None:
+        # Capture visual features of the current view, so future arrivals at
         # this label can be visually confirmed instead of trusting the timed
-        # move-sequence alone (which drifts with no odometry to correct it).
+        # move-sequence alone (which drifts with no odometry to correct it) -
+        # or, for exploration-discovered spots, so it's recognizable at all
+        # since there's no move-sequence for those in the first place.
         self.location_feature_request_pub.publish(
             String(data=json.dumps({"action": "capture", "label": label}, ensure_ascii=False))
         )
+
+    def start_explore(self) -> None:
+        # Autonomous exploration reuses the exact same reactive driving as
+        # PATROLLING (vision_nav_node/depth_nav_node both drive "exploring"
+        # the same way they drive "patrolling" - see their drives_forward
+        # checks). What makes this a distinct mode is patrol_node itself
+        # periodically pausing it to build up a set of named locations - see
+        # tick_explore_labeling/on_admin_text. There's still no odometry, so
+        # this is a growing list of "known spots" (each with visual features,
+        # like a quick-saved location), not a geometric map - see
+        # docs/navigation_roadmap.md.
+        self.set_state(PatrolState.EXPLORING)
+        self.current_target = ""
+        self.awaiting_label = False
+        self.explore_last_label_request_at = time.monotonic()
+        self.publish_event(
+            "autonomous exploration started - driving and avoiding obstacles on its own; "
+            "periodically stops to ask for a name for the current spot"
+        )
+
+    def tick_explore_labeling(self) -> None:
+        if self.state != PatrolState.EXPLORING:
+            return
+        now = time.monotonic()
+        if self.awaiting_label:
+            timeout = float(self.get_parameter("explore_label_timeout_seconds").value)
+            if now - self.explore_last_label_request_at > timeout:
+                self.publish_event("라벨 응답이 없어 이 지점은 건너뛰고 탐색을 계속합니다")
+                self.awaiting_label = False
+                self.explore_last_label_request_at = now
+            return
+        interval = float(self.get_parameter("explore_label_interval_seconds").value)
+        if now - self.explore_last_label_request_at > interval:
+            self.awaiting_label = True
+            self.explore_last_label_request_at = now
+            self.stop_motion()
+            self.publish_event(
+                "탐색 중 새 지점 발견 - 이 위치의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')"
+            )
+
+    def on_admin_text(self, msg: String) -> None:
+        if self.state != PatrolState.EXPLORING or not self.awaiting_label:
+            return
+        text = msg.data.strip()
+        if not text:
+            return
+        if text.lower() in {"스킵", "skip", "pass", "넘어가", "건너뛰기", "건너뛰어"}:
+            self.publish_event("라벨링 건너뜀 - 탐색 계속")
+        else:
+            label = text
+            if not self.location_store.has(label):
+                self.location_store.set(label, [])
+            self.publish_event(f"탐색 중 위치 라벨 저장: {label}")
+            self.request_location_feature_capture(label)
+        self.awaiting_label = False
+        self.explore_last_label_request_at = time.monotonic()
 
     def start_manual_move(self, kind: str, modifier: str = "") -> None:
         self.manual_kind = kind
@@ -296,6 +378,8 @@ class PatrolNode(Node):
         self.last_vision_cmd_at = time.monotonic()
 
     def drive_loop(self) -> None:
+        self.tick_explore_labeling()
+
         twist = Twist()
         linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale
         angular_speed = float(self.get_parameter("angular_speed").value) * self.speed_scale
@@ -305,6 +389,13 @@ class PatrolNode(Node):
         vision_gated_states = {PatrolState.PATROLLING, PatrolState.FOLLOWING_PERSON}
         if self.state == PatrolState.MANUAL_DRIVE and self.manual_kind == "move_forward":
             vision_gated_states = vision_gated_states | {PatrolState.MANUAL_DRIVE}
+        # Only let vision/depth drive EXPLORING while not paused for a label
+        # reply - tick_explore_labeling() above already called stop_motion()
+        # the moment it set awaiting_label, and excluding EXPLORING from this
+        # set here means we fall through to the safe_stop_on_idle catch-all
+        # below instead of a stray vision_cmd_vel overriding that stop.
+        if self.state == PatrolState.EXPLORING and not self.awaiting_label:
+            vision_gated_states = vision_gated_states | {PatrolState.EXPLORING}
         if self.state in vision_gated_states and self.use_recent_vision_cmd():
             self.cmd_vel_pub.publish(self.last_vision_cmd)
             return

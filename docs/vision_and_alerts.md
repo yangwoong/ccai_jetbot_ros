@@ -546,3 +546,40 @@ D435i의 RGB 영상을 실제 카메라 프리뷰로 쓰고, 그 위에 주행�
 - 관련 파라미터(`robot.yaml` → `depth_nav_node`): `color_image_topic`(기본 `/camera/camera/color/image_raw`), `debug_image_enabled`.
 - 코드: `depth_nav_node.py`(`on_color_image`, `publish_debug_frame`, `analyze_depth`/`describe_signals`로 신호 계산과 발행 로직 분리), `web_chat_node.py`(`/api/depth_debug.jpg`, `depthDebug` 패널), `launch/patrol.launch.py`(`enable_color: true`).
 - **한계**: depth와 color 센서의 정확한 픽셀 정렬(`align_depth`)까지는 하지 않았습니다 — 좌/중/우 3등분 정도의 대략적인 방향 표시 목적에는 이 정도로 충분하다고 판단했습니다. 픽셀 단위로 정밀하게 맞추려면 `align_depth.enable:=true`를 realsense 런치 인자에 추가하고 정렬된 토픽을 구독하도록 확장이 필요합니다.
+
+### 20-1. 오버레이를 사각형 3분할 → 실제 바닥 모양을 따라가는 픽셀 단위 마스크로 변경
+
+처음 구현은 좌/중/우를 딱딱한 사각형 3개로 색칠하는 방식이었는데, 사용자가 참고 이미지(자율주행 대시캠처럼 실제 도로/바닥 모양을 따라가는 초록색 오버레이)를 보여주며 더 자연스러운 형태를 요청했습니다.
+
+- **방식 변경**: 3분할 사각형 대신, depth 프레임의 **모든 픽셀**을 각자의 깊이값으로 직접 분류합니다 — 초록(정지거리의 1.6배 이상, 열림) / 노랑(주의) / 빨강(정지거리 이내, 장애물). 화면 상단 30%(하늘/천장/먼 벽)는 제외하고 바닥이 있을 법한 하단 영역만 분류합니다. 이렇게 하면 오버레이가 실제 장애물의 윤곽·바닥 형태를 자연스럽게 따라갑니다(고정된 3개 박스가 아니라).
+- depth 프레임 해상도가 color 프레임과 다르면 `cv2.resize`(nearest-neighbor)로 맞춥니다.
+- 유효하지 않은 깊이값(측정 범위 밖, no-return)은 색칠하지 않고 원본 화면 그대로 둡니다 — 불확실한 영역을 "열림"이라고 잘못 주장하지 않기 위해서입니다.
+- 코드: `depth_nav_node.py`의 `build_drivable_overlay()`(신규), `publish_debug_frame()`이 이걸 호출해서 알파 블렌딩.
+
+## 21. 자율탐색(explore) 임무: 스스로 이동 + 관리자에게 위치 라벨 요청
+
+"자율탐색" 임무를 주면 로봇이 스스로 돌아다니며 장애물을 피하고, 주기적으로 멈춰서 관리자에게 현재 위치의 이름을 물어봅니다. 오도메트리/SLAM이 없어 좌표 기반 지도는 여전히 못 만들지만(§8, `navigation_roadmap.md`에서 이미 설명한 한계), 이 기능으로 "이 장소는 이런 이름"이라는 정보가 탐색 중 자동으로 계속 쌓이게 됩니다 — 관리자가 매번 `기억 시작`으로 직접 가르칠 필요 없이, 로봇이 먼저 발견하고 이름만 물어보는 방식입니다.
+
+### 사용 방법
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/chat -H "Content-Type: application/json" -d '{"message":"자율탐색"}'
+```
+
+- 시작하면 D435i(또는 CSI, D435i 미연결 시) 기반 반응형 주행(§9, §19에서 이미 구현된 "장애물 피하고 열린 쪽으로" 로직)으로 스스로 움직입니다 — 지금 있는 반응형 회피/주행 로직을 그대로 재사용하므로 새 주행 알고리즘을 따로 만들지 않았습니다.
+- 기본 45초(`explore_label_interval_seconds`)마다 로봇이 멈추고 이벤트로 물어봅니다: `"탐색 중 새 지점 발견 - 이 위치의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')"`. 이 이벤트는 텔레그램/웹채팅에 그대로 뜹니다.
+- 관리자가 다음 채팅 메시지로 이름(예: "창고", "휴게실 앞")을 보내면, 그 자리의 시각 특징(§11의 ORB 방식과 동일)을 캡처해서 그 이름으로 저장하고 탐색을 계속합니다. "스킵"이라고 답하면 그 지점은 넘어갑니다.
+- 기본 120초(`explore_label_timeout_seconds`) 안에 답이 없으면 자동으로 건너뛰고 계속 탐색합니다(무한정 멈춰있지 않음).
+- 중지: `자율탐색 중지` (또는 그냥 `정지`도 동작 - 기존 `patrol_stop` 경로와 별개로 `explore_stop` 전용 명령도 추가했습니다).
+
+### 저장된 위치 사용
+
+탐색으로 쌓인 위치는 기존 teach-and-repeat 위치와 완전히 동일하게 취급됩니다(§8, §11) — 예를 들어 탐색 중 "창고"라고 이름 붙였다면, 나중에 "창고에 뭐 있는지 확인해줘" 같은 임무에서 그 이름을 인식합니다. 다만 탐색으로 발견한 위치는 §8의 "방법 2"(시각 특징만, 이동 경로 없음)와 동일한 한계가 있습니다 — 실제로 "거기까지 가는" 이동 경로는 없고, 그 장면을 시각적으로 인식/대조하는 용도로만 쓰입니다.
+
+### 구현 메모
+
+- `PatrolState.EXPLORING` 신규 상태. `vision_nav_node`/`depth_nav_node`의 주행 조건(`drives_forward`)에 `"exploring"`을 추가해서 기존 `patrolling`과 동일하게 반응형 주행 명령을 받도록 했습니다(새 회피 로직 없음 - 기존 것 재사용).
+- 라벨 답변은 정식 명령 파싱을 거치지 않고 `/ccai/admin_text`(원문 그대로)를 `patrol_node`가 직접 구독해서 처리합니다 — "창고"처럼 자유 형식 텍스트를 `mission.py`의 명령 패턴에 억지로 맞추지 않기 위해서입니다. 다만 이 원문은 `llm_control_node`에도 동시에 전달되어 별도로 명령 해석을 시도하므로, 라벨로 보낸 텍스트가 우연히 다른 명령처럼 보이면 채팅창에 부가적인 "say"류 이벤트가 하나 더 뜰 수 있습니다(무해하지만 약간 지저분할 수 있음).
+- 관련 파라미터(`robot.yaml` → `patrol_node`): `explore_label_interval_seconds`(기본 45.0), `explore_label_timeout_seconds`(기본 120.0).
+- 코드: `mission.py`(`explore_start`/`explore_stop`), `llm_control_node.py`(SYSTEM_PROMPT), `patrol_node.py`(`start_explore`, `tick_explore_labeling`, `on_admin_text`, `request_location_feature_capture`로 캡처 로직 공통화).
+- **다음 단계**: `navigation_roadmap.md`의 "다음 작업 계획"에 있던 "1. 자동 탐색 모드"가 바로 이 기능입니다. 아직 안 된 것: 탐색 경로 자체의 기록(어디서 어디로 갔는지), 여러 위치 간 상대적 연결 관계(그래프), VLM을 이용한 자동 장면 분류(관리자가 라벨을 안 줘도 "현관/복도/주방" 등으로 스스로 분류) - 이번엔 "관리자가 라벨을 준다"는 명시적 요청대로 구현했습니다.

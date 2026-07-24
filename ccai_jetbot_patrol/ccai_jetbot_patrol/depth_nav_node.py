@@ -80,6 +80,7 @@ class DepthNavNode(Node):
         self.last_signals = None
         self.last_detail = ""
         self.last_frame_count = 0
+        self.last_depth_frame = None
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
@@ -131,8 +132,9 @@ class DepthNavNode(Node):
         self.last_frame_count += 1
         signals = self.analyze_depth(depth)
         self.last_signals = signals
+        self.last_depth_frame = depth
 
-        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
         if drives_forward:
             twist, detail = self.compute_patrol_command(signals)
             self.last_detail = detail
@@ -275,43 +277,64 @@ class DepthNavNode(Node):
         )
         return twist, detail
 
+    def build_drivable_overlay(self, depth, shape) -> object:
+        """Per-pixel drivable-floor overlay instead of three rigid boxes: every
+        pixel in the analysis region is classified straight from its own
+        depth reading (green=clearly open, yellow=caution, red=too close),
+        so the colored region actually follows the shape of the real floor
+        and whatever is sticking into it - like a dashcam lane-overlay, not a
+        fixed grid. Returns an RGB image of `shape` with 0 alpha (black)
+        outside the analysis region, to be alpha-blended by the caller.
+        """
+        height, width = shape[:2]
+        if depth.shape[:2] != (height, width):
+            depth = self.cv2.resize(depth, (width, height), interpolation=self.cv2.INTER_NEAREST)
+
+        min_valid = float(self.get_parameter("min_valid_depth_m").value)
+        max_valid = float(self.get_parameter("max_valid_depth_m").value)
+        stop_distance = float(self.get_parameter("obstacle_stop_distance_m").value)
+
+        # Only classify the lower portion of the frame (the floor ahead) -
+        # painting the whole image would tint walls/ceiling/sky green too,
+        # since a far wall can easily read as "open" in raw depth terms.
+        roi_top = int(height * 0.30)
+        valid = (depth >= min_valid) & (depth <= max_valid)
+        valid[:roi_top, :] = False
+        red_mask = valid & (depth <= stop_distance)
+        yellow_mask = valid & (depth > stop_distance) & (depth <= stop_distance * 1.6)
+        green_mask = valid & (depth > stop_distance * 1.6)
+
+        overlay = self.np.zeros((height, width, 3), dtype=self.np.uint8)
+        overlay[green_mask] = (0, 200, 0)
+        overlay[yellow_mask] = (0, 200, 255)
+        overlay[red_mask] = (0, 0, 255)
+        mask = green_mask | yellow_mask | red_mask
+        return overlay, mask
+
     def publish_debug_frame(self, frame) -> None:
-        """Draw the drivable-path bands (colored by openness), current
-        obstacle/steering state, and the robot's current mode/location label
-        onto the D435i color frame, so the web UI's main preview shows not
-        just raw video but what the navigation is actually seeing and
-        deciding - mirrors vision_nav_node's CSI debug overlay.
+        """Draw the per-pixel drivable-floor overlay, current obstacle/
+        steering state, and the robot's current mode/location label onto the
+        D435i color frame, so the web UI's main preview shows not just raw
+        video but what the navigation is actually seeing and deciding -
+        mirrors vision_nav_node's CSI debug overlay.
         """
         try:
             signals = self.last_signals
             debug = frame.copy()
             height, width = debug.shape[:2]
-            third = width // 3
-            band_top = int(height * 0.35)
-            band_bottom = int(height * 0.75)
-            stop_distance = float(self.get_parameter("obstacle_stop_distance_m").value)
+
+            if self.last_depth_frame is not None:
+                overlay, mask = self.build_drivable_overlay(self.last_depth_frame, debug.shape)
+                blended = self.cv2.addWeighted(overlay, 0.4, debug, 0.6, 0)
+                debug[mask] = blended[mask]
 
             if signals is not None:
-                distances = [signals["left_distance"], signals["center_distance"], signals["right_distance"]]
-                for index, distance in enumerate(distances):
-                    x0 = index * third
-                    x1 = width if index == 2 else (index + 1) * third
-                    if distance < stop_distance:
-                        color = (0, 0, 255)
-                    elif distance < stop_distance * 2.0:
-                        color = (0, 200, 255)
-                    else:
-                        color = (0, 200, 0)
-                    overlay = debug.copy()
-                    self.cv2.rectangle(overlay, (x0, band_top), (x1, band_bottom), color, -1)
-                    self.cv2.addWeighted(overlay, 0.25, debug, 0.75, 0, debug)
-                    self.cv2.rectangle(debug, (x0, band_top), (x1, band_bottom), color, 2)
-                    self.cv2.putText(
-                        debug, "{0:.2f}m".format(distance), (x0 + 8, band_bottom - 10),
-                        self.cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2,
-                    )
                 status_text = "OBSTACLE" if signals["obstacle_now"] else "CLEAR"
                 status_color = (0, 0, 255) if signals["obstacle_now"] else (0, 200, 0)
+                metrics = "left={0:.2f}m center={1:.2f}m right={2:.2f}m".format(
+                    signals["left_distance"], signals["center_distance"], signals["right_distance"]
+                )
+                self.cv2.putText(debug, metrics, (8, height - 50), self.cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
             else:
                 status_text = "NO SIGNAL"
                 status_color = (0, 165, 255)
@@ -340,7 +363,7 @@ class DepthNavNode(Node):
             self.get_logger().debug("depth debug frame draw failed: {0}".format(exc))
 
     def watchdog(self) -> None:
-        drives_forward = self.mode == "patrolling" or (self.mode == "manual_drive" and self.target == "move_forward")
+        drives_forward = self.mode in ("patrolling", "exploring") or (self.mode == "manual_drive" and self.target == "move_forward")
         if not drives_forward:
             return
         timeout = float(self.get_parameter("min_valid_frame_seconds").value)
