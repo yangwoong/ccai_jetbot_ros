@@ -66,6 +66,17 @@ class PatrolNode(Node):
         self.declare_parameter("pose_goal_timeout_seconds", 30.0)
         self.declare_parameter("heading_align_threshold_rad", 0.3)
         self.declare_parameter("explore_step_distance_m", 0.8)
+        # Separate, much shorter than pose_goal_timeout_seconds - the coverage
+        # explorer needs to give up on a stuck sub-goal quickly, not wait 30s.
+        # Confirmed on real hardware (2026-07-25): visual_odom_node's yaw
+        # estimate can freeze mid-rotation (ORB tracking lost to motion blur
+        # during fast turns, see its docstring - it holds the last pose rather
+        # than guess), which made compute_steering_twist's heading error look
+        # permanently large and the robot just rotated toward the same
+        # sub-goal forever, never transitioning to driving forward. Giving up
+        # and resampling a new sub-goal after a short timeout breaks that
+        # deadlock regardless of why alignment isn't converging.
+        self.declare_parameter("explore_subgoal_timeout_seconds", 8.0)
         self.declare_parameter("explore_visited_cell_size_m", 0.5)
         self.declare_parameter("explore_candidate_count", 8)
 
@@ -474,7 +485,7 @@ class PatrolNode(Node):
         self.visited_cells[cell] = self.visited_cells.get(cell, 0) + 1
 
         now = time.monotonic()
-        timeout = float(self.get_parameter("pose_goal_timeout_seconds").value)
+        timeout = float(self.get_parameter("explore_subgoal_timeout_seconds").value)
         need_new_goal = self.explore_sub_goal is None or now - self.explore_sub_goal_started_at > timeout
         if not need_new_goal:
             twist, arrived = self.compute_steering_twist(

@@ -28,6 +28,7 @@ patrol_node:
     pose_goal_timeout_seconds: 30.0
     heading_align_threshold_rad: 0.3
     explore_step_distance_m: 0.8
+    explore_subgoal_timeout_seconds: 8.0
     explore_visited_cell_size_m: 0.5
     explore_candidate_count: 8
 
