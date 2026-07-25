@@ -149,6 +149,23 @@ def generate_launch_description():
         nodes.append(Node(package="ccai_jetbot_patrol", executable="patrol_node", name="patrol_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_VLM", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="vlm_client_node", name="vlm_client_node", parameters=[config], output="screen"))
+    if env_enabled("CCAI_ENABLE_EXPLORE_LLM", False):
+        # Second, independent instance of the same vlm_client_node code
+        # (zero code changes needed), watching the D435i's front-facing color
+        # feed instead of the CSI ceiling feed the main instance above
+        # watches - patrol_node's room-scan explorer (explore_room_scan_mode)
+        # triggers this one specifically to ask "is there a doorway here" at
+        # each rotation step. image_topic/trigger_topic are declared
+        # parameters (see vlm_explore_node: block in config/robot.yaml); the
+        # observation output topic is hardcoded in vlm_client_node.py, so it's
+        # remapped here instead (only way to separate the two instances'
+        # output without touching that file).
+        nodes.append(Node(
+            package="ccai_jetbot_patrol", executable="vlm_client_node", name="vlm_explore_node",
+            parameters=[config],
+            remappings=[("/ccai/vlm_observation", "/ccai/vlm_explore_observation")],
+            output="screen",
+        ))
     if env_enabled("CCAI_ENABLE_LLM", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="llm_control_node", name="llm_control_node", parameters=[config], output="screen"))
     if env_enabled("CCAI_ENABLE_WEB", True):

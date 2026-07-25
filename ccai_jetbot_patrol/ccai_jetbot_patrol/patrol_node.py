@@ -7,6 +7,7 @@ from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 
+from ccai_jetbot_patrol.explore_graph import RoomGraph
 from ccai_jetbot_patrol.locations import LocationStore
 from ccai_jetbot_patrol.mission import parse_mission_command
 
@@ -80,6 +81,29 @@ class PatrolNode(Node):
         self.declare_parameter("explore_visited_cell_size_m", 0.5)
         self.declare_parameter("explore_candidate_count", 8)
 
+        # Room-scan explorer (2026-07-26): a completely different EXPLORING
+        # behavior, requested to replace the coverage-seeking driver above
+        # because that one's point-to-point steering depends on
+        # visual_odom_node's yaw estimate, which was confirmed on real
+        # hardware to not track reliably during rotation (see
+        # explore_subgoal_timeout_seconds' comment) - so instead of driving
+        # toward sampled (x, y) points, this rotates in fixed TIME increments
+        # (no yaw feedback needed at all) and asks the VLM at each heading
+        # whether a doorway is visible. When explore_room_scan_mode is true,
+        # this takes over EXPLORING entirely (checked before
+        # explore_frontier_mode in drive_loop) - see tick_room_scan().
+        self.declare_parameter("explore_room_scan_mode", False)
+        # Number of stops in one full rotation (360 / this = degrees per
+        # step, e.g. 8 -> 45 degrees). Timed, not yaw-fed - see angular_speed.
+        self.declare_parameter("explore_room_scan_headings", 8)
+        self.declare_parameter("explore_room_scan_vlm_timeout_seconds", 15.0)
+        # How long to drive straight through a doorway / back out of one -
+        # timed dead-reckoning, not distance-fed, for the same reason as the
+        # rotation above. Tune to this robot's actual speed and typical
+        # doorway/room depth.
+        self.declare_parameter("explore_room_scan_advance_seconds", 4.0)
+        self.declare_parameter("explore_graph_file", "data/room_graph.json")
+
         self.state = PatrolState.IDLE
         self.current_target = ""
         self.last_vlm_summary = ""
@@ -119,10 +143,37 @@ class PatrolNode(Node):
         self.explore_sub_goal = None
         self.explore_sub_goal_started_at = 0.0
 
+        # Room-scan explorer state - see explore_room_scan_mode's
+        # declare_parameter comment and tick_room_scan() for the full
+        # explanation. room_phase is None whenever this mode isn't actively
+        # driving (mirrors self.state == EXPLORING + explore_room_scan_mode).
+        self.explore_graph = RoomGraph(str(self.get_parameter("explore_graph_file").value))
+        self.room_phase = None
+        self.room_scan_total_steps = 8
+        self.room_scan_current_room_id = None
+        self.room_scan_heading_step = 0
+        self.room_scan_doorways = []
+        self.room_scan_rotate_delta = 0
+        self.room_scan_rotate_started_at = 0.0
+        self.room_scan_next_phase = ""
+        self.room_scan_phase_started_at = 0.0
+        self.room_scan_vlm_ready = False
+        self.room_scan_vlm_text = ""
+        self.room_scan_awaiting_label = False
+        self.room_scan_awaiting_ceiling = False
+        self.room_scan_pending_doorway_step = 0
+
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.vlm_trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
+        # Dedicated VLM instance watching the D435i (front-facing) color feed
+        # for room-scan doorway detection - separate from vlm_trigger_pub
+        # above, which goes to the CSI-watching instance used for general risk
+        # monitoring and inspect/replay questions. See launch/patrol.launch.py's
+        # CCAI_ENABLE_EXPLORE_LLM vlm_explore_node instance.
+        self.vlm_explore_trigger_pub = self.create_publisher(String, "/ccai/vlm_explore_trigger", 10)
+        self.create_subscription(String, "/ccai/vlm_explore_observation", self.on_vlm_explore_observation, 10)
         self.location_feature_request_pub = self.create_publisher(String, "/ccai/location_feature_request", 10)
         self.create_subscription(String, "/ccai/mission_command", self.on_mission_command, 10)
         self.create_subscription(String, "/ccai/vlm_observation", self.on_vlm_observation, 10)
@@ -188,6 +239,9 @@ class PatrolNode(Node):
             self.set_state(PatrolState.STOPPED)
             self.stop_motion()
             self.awaiting_label = False
+            self.room_phase = None
+            self.room_scan_awaiting_label = False
+            self.room_scan_awaiting_ceiling = False
             self.publish_event("autonomous exploration stopped")
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
@@ -379,13 +433,36 @@ class PatrolNode(Node):
         self.explore_last_label_request_at = time.monotonic()
         self.visited_cells = {}
         self.explore_sub_goal = None
+        if bool(self.get_parameter("explore_room_scan_mode").value):
+            self.start_room_scan_explore()
+            return
         self.publish_event(
             "autonomous exploration started - driving and avoiding obstacles on its own; "
             "periodically stops to ask for a name for the current spot"
         )
 
+    def start_room_scan_explore(self) -> None:
+        self.room_scan_total_steps = max(int(self.get_parameter("explore_room_scan_headings").value), 4)
+        room_id = self.explore_graph.start_room(parent_room_id=None, entered_via_step=None)
+        self.room_scan_current_room_id = room_id
+        self.room_scan_heading_step = 0
+        self.room_scan_doorways = []
+        self.room_scan_awaiting_label = False
+        self.room_scan_awaiting_ceiling = False
+        degrees = 360 // self.room_scan_total_steps
+        self.publish_event(
+            f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향을 확인, "
+            "출입구를 찾으면 그쪽으로 이동합니다"
+        )
+        self.room_scan_request_vlm_step()
+
     def tick_explore_labeling(self) -> None:
         if self.state != PatrolState.EXPLORING:
+            return
+        if bool(self.get_parameter("explore_room_scan_mode").value):
+            # Room-scan explorer has its own end-of-sweep labeling flow (see
+            # room_scan_begin_await_label) - this periodic-interval labeling
+            # is the other (coverage/reactive) explorer's mechanism.
             return
         now = time.monotonic()
         if self.awaiting_label:
@@ -427,6 +504,11 @@ class PatrolNode(Node):
             return False
 
     def on_admin_text(self, msg: String) -> None:
+        if self.state == PatrolState.EXPLORING and self.room_scan_awaiting_label:
+            text = msg.data.strip()
+            if text:
+                self.on_room_scan_label(text)
+            return
         if self.state != PatrolState.EXPLORING or not self.awaiting_label:
             return
         text = msg.data.strip()
@@ -500,6 +582,248 @@ class PatrolNode(Node):
         )
         return twist
 
+    # --- Room-scan explorer -------------------------------------------------
+    # Replaces coverage-seeking EXPLORING when explore_room_scan_mode is true.
+    # Rotates in fixed-time 45-degree-ish steps (see explore_room_scan_headings),
+    # asking the D435i-watching VLM instance (vlm_explore_node) at each heading
+    # whether a doorway is visible. After a full sweep, asks the CSI-watching
+    # VLM instance for a ceiling/space description, then asks the admin for a
+    # label, then drives through the first untried doorway into a new room
+    # (recorded as a child in self.explore_graph) - or, if this room has no
+    # untried doorways left, backtracks to the parent room and tries its next
+    # one, depth-first, until the whole reachable graph is covered.
+    #
+    # Everything here is time-based dead reckoning (no visual_odom_node yaw
+    # dependency - see explore_subgoal_timeout_seconds' comment for why that
+    # was unreliable during rotation). This means heading/position error
+    # accumulates with every hop; multi-room backtracking is honest
+    # best-effort, not precise. See docs/navigation_roadmap.md.
+
+    def room_scan_request_vlm_step(self) -> None:
+        self.room_scan_vlm_ready = False
+        self.room_scan_vlm_text = ""
+        self.room_scan_phase_started_at = time.monotonic()
+        self.room_phase = "await_vlm_step"
+        question = (
+            "이 사진에서 문, 출입구, 다른 방/복도로 이어지는 통로가 보이면 'DOOR:YES'로 시작해서 "
+            "이어서 10자 이내로 설명해줘. 안 보이면 'DOOR:NO'로 시작해서 이 장면을 10자 이내로 설명해줘."
+        )
+        self.vlm_explore_trigger_pub.publish(String(data=json.dumps({"question": question}, ensure_ascii=False)))
+
+    def on_vlm_explore_observation(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+            text = str(payload.get("summary", "")) or str(payload.get("raw", ""))
+        except (json.JSONDecodeError, AttributeError):
+            text = msg.data
+        self.room_scan_vlm_text = text
+        self.room_scan_vlm_ready = True
+
+    def room_scan_process_vlm_step_result(self) -> None:
+        text = (self.room_scan_vlm_text or "").strip()
+        upper = text.upper()
+        has_door = upper.startswith("DOOR:YES") or (
+            "DOOR:NO" not in upper and any(k in text for k in ("출입구", "통로", "문이", "문 "))
+        )
+        if has_door:
+            description = text.split(":", 1)[1].strip() if ":" in text else text
+            if description.upper().startswith("YES:"):
+                description = description[4:].strip()
+            self.explore_graph.add_doorway(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30])
+            degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
+            self.publish_event(f"{degrees}도 방향 - 출입구 감지: {description[:30]}")
+        if self.room_scan_heading_step < self.room_scan_total_steps - 1:
+            self.room_scan_begin_rotate(1, "await_vlm_step")
+        else:
+            self.room_scan_begin_rotate(1, "await_ceiling")
+
+    def room_scan_request_ceiling_analysis(self) -> None:
+        self.room_scan_awaiting_ceiling = True
+        self.room_phase = "await_ceiling"
+        self.room_scan_phase_started_at = time.monotonic()
+        self.request_analysis("천장의 모양과 이 공간의 대략적인 크기를 15자 이내로 한국어로 설명해줘", location="")
+
+    def room_scan_begin_await_label(self) -> None:
+        self.room_scan_awaiting_label = True
+        self.room_phase = "await_label"
+        self.stop_motion()
+        self.publish_event("이 방의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')")
+
+    def on_room_scan_label(self, text: str) -> None:
+        room_id = self.room_scan_current_room_id
+        if text.lower() in {"스킵", "skip", "pass", "넘어가", "건너뛰기", "건너뛰어"}:
+            self.publish_event("라벨링 건너뜀")
+        else:
+            label = text
+            self.explore_graph.set_label(room_id, label)
+            if not self.location_store.has(label):
+                self.location_store.set(label, [])
+            self.request_location_feature_capture(label)
+            if self.has_recent_odom():
+                self.location_store.set_pose(label, self.odom_x, self.odom_y, self.odom_yaw)
+            self.publish_event(f"방 라벨 저장: {label}")
+        self.room_scan_awaiting_label = False
+        self.room_scan_advance_after_label()
+
+    def room_scan_advance_after_label(self) -> None:
+        room_id = self.room_scan_current_room_id
+        doorway = self.explore_graph.next_untried_doorway(room_id)
+        if doorway is None:
+            self.room_scan_begin_backtrack_or_finish()
+            return
+        self.explore_graph.mark_doorway_tried(room_id, doorway["step"])
+        self.room_scan_pending_doorway_step = doorway["step"]
+        delta = (doorway["step"] - self.room_scan_heading_step) % self.room_scan_total_steps
+        self.publish_event(f"출입구({doorway['description']})로 이동합니다")
+        self.room_scan_begin_rotate(delta, "advance_doorway")
+
+    def room_scan_begin_backtrack_or_finish(self) -> None:
+        room_id = self.room_scan_current_room_id
+        entered_via = self.explore_graph.entered_via_step_of(room_id)
+        if entered_via is None:
+            self.publish_event("탐색 완료 - 더 이상 갈 출입구가 없습니다. " + "; ".join(self.explore_graph.summary_lines()))
+            self.room_phase = None
+            self.set_state(PatrolState.STOPPED)
+            self.stop_motion()
+            return
+        half = self.room_scan_total_steps // 2
+        delta = (half - self.room_scan_heading_step) % self.room_scan_total_steps
+        self.publish_event("탐색할 출입구가 더 없어 이전 방으로 돌아갑니다")
+        self.room_scan_begin_rotate(delta, "backtrack_advance")
+
+    def room_scan_begin_rotate(self, delta_steps: int, next_phase: str) -> None:
+        self.room_scan_rotate_delta = delta_steps
+        self.room_scan_rotate_started_at = time.monotonic()
+        self.room_scan_next_phase = next_phase
+        self.room_phase = "rotating"
+
+    def room_scan_complete_rotation(self) -> None:
+        next_phase = self.room_scan_next_phase
+        if next_phase == "await_vlm_step":
+            self.room_scan_request_vlm_step()
+        elif next_phase == "await_ceiling":
+            self.room_scan_request_ceiling_analysis()
+        elif next_phase == "after_backtrack_correct":
+            self.room_scan_after_backtrack_correct()
+        elif next_phase in ("advance_doorway", "backtrack_advance"):
+            self.room_scan_phase_started_at = time.monotonic()
+            self.room_phase = next_phase
+        else:
+            self.room_phase = next_phase
+
+    def room_scan_enter_new_room(self) -> None:
+        parent_id = self.room_scan_current_room_id
+        entered_via = self.room_scan_pending_doorway_step
+        room_id = self.explore_graph.start_room(parent_room_id=parent_id, entered_via_step=entered_via)
+        self.room_scan_current_room_id = room_id
+        self.room_scan_heading_step = 0
+        self.publish_event("새 방으로 진입 - 탐색 계속")
+        self.room_scan_request_vlm_step()
+
+    def room_scan_abort_advance(self) -> None:
+        self.publish_event("이동 중 장애물 감지 - 이 출입구는 포기하고 다른 방향을 찾습니다")
+        self.room_scan_heading_step = self.room_scan_pending_doorway_step
+        self.room_scan_advance_after_label()
+
+    def room_scan_finish_backtrack(self) -> None:
+        room_id = self.room_scan_current_room_id
+        k = self.explore_graph.entered_via_step_of(room_id)
+        parent_id = self.explore_graph.parent_of(room_id)
+        self.room_scan_current_room_id = parent_id
+        total = self.room_scan_total_steps
+        half = total // 2
+        correction = (-(k + half)) % total
+        if correction == 0:
+            self.room_scan_heading_step = 0
+            self.room_scan_after_backtrack_correct()
+        else:
+            self.room_scan_begin_rotate(correction, "after_backtrack_correct")
+
+    def room_scan_after_backtrack_correct(self) -> None:
+        self.room_scan_heading_step = 0
+        room_id = self.room_scan_current_room_id
+        doorway = self.explore_graph.next_untried_doorway(room_id)
+        if doorway is None:
+            self.room_scan_begin_backtrack_or_finish()
+            return
+        self.explore_graph.mark_doorway_tried(room_id, doorway["step"])
+        self.room_scan_pending_doorway_step = doorway["step"]
+        self.publish_event(f"이전 방에서 다른 출입구({doorway['description']})로 이동합니다")
+        self.room_scan_begin_rotate(doorway["step"], "advance_doorway")
+
+    def tick_room_scan(self, linear_speed: float, angular_speed: float) -> None:
+        import math
+
+        if self.room_phase is None:
+            self.stop_motion()
+            return
+
+        if self.room_phase == "rotating":
+            if self.is_obstacle_now():
+                # Shift the window forward by roughly one tick so the paused
+                # time doesn't count toward "how long have we been turning" -
+                # otherwise a brief obstacle pause would make this phase think
+                # it finished turning sooner than the motors actually did.
+                self.room_scan_rotate_started_at += 0.2
+                self.stop_motion()
+                return
+            per_step = (2.0 * math.pi / self.room_scan_total_steps) / max(angular_speed, 0.01)
+            target = per_step * self.room_scan_rotate_delta
+            elapsed = time.monotonic() - self.room_scan_rotate_started_at
+            if self.room_scan_rotate_delta > 0 and elapsed < target:
+                twist = Twist()
+                twist.angular.z = angular_speed
+                self.cmd_vel_pub.publish(twist)
+                return
+            self.stop_motion()
+            self.room_scan_heading_step = (
+                self.room_scan_heading_step + self.room_scan_rotate_delta
+            ) % self.room_scan_total_steps
+            self.room_scan_complete_rotation()
+            return
+
+        if self.room_phase == "await_vlm_step":
+            timeout = float(self.get_parameter("explore_room_scan_vlm_timeout_seconds").value)
+            if not self.room_scan_vlm_ready:
+                if time.monotonic() - self.room_scan_phase_started_at > timeout:
+                    self.room_scan_vlm_text = "DOOR:NO (응답 시간 초과)"
+                    self.room_scan_vlm_ready = True
+                else:
+                    self.stop_motion()
+                    return
+            self.room_scan_process_vlm_step_result()
+            return
+
+        if self.room_phase in ("await_ceiling", "await_label"):
+            self.stop_motion()
+            return
+
+        if self.room_phase in ("advance_doorway", "backtrack_advance"):
+            if self.is_obstacle_now():
+                self.stop_motion()
+                if self.room_phase == "advance_doorway":
+                    self.room_scan_abort_advance()
+                else:
+                    # backtrack_advance doesn't abort (this path was clear
+                    # moments ago, most likely a transient) - just wait, and
+                    # shift the window forward so the pause doesn't count
+                    # toward "how far have we driven".
+                    self.room_scan_phase_started_at += 0.2
+                return
+            duration = float(self.get_parameter("explore_room_scan_advance_seconds").value)
+            elapsed = time.monotonic() - self.room_scan_phase_started_at
+            if elapsed < duration:
+                twist = Twist()
+                twist.linear.x = linear_speed
+                self.cmd_vel_pub.publish(twist)
+                return
+            self.stop_motion()
+            if self.room_phase == "advance_doorway":
+                self.room_scan_enter_new_room()
+            else:
+                self.room_scan_finish_backtrack()
+            return
+
     def start_manual_move(self, kind: str, modifier: str = "") -> None:
         self.manual_kind = kind
         if self.recording and kind in {"move_forward", "move_backward", "turn_left", "turn_right"}:
@@ -550,6 +874,14 @@ class PatrolNode(Node):
             summary = msg.data
             risk = any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"])
         self.last_vlm_summary = summary
+        if self.room_scan_awaiting_ceiling:
+            self.room_scan_awaiting_ceiling = False
+            self.pending_analysis = False
+            self.pending_analysis_location = ""
+            self.explore_graph.set_ceiling_description(self.room_scan_current_room_id, summary[:60])
+            self.publish_event(f"천장/공간 특징: {summary[:60]}")
+            self.room_scan_begin_await_label()
+            return
         if self.pending_analysis:
             self.pending_analysis = False
             prefix = f"{self.pending_analysis_location}: " if self.pending_analysis_location else ""
@@ -612,6 +944,14 @@ class PatrolNode(Node):
         linear_speed = float(self.get_parameter("linear_speed").value) * self.speed_scale
         angular_speed = float(self.get_parameter("angular_speed").value) * self.speed_scale
         use_frontier_mode = bool(self.get_parameter("explore_frontier_mode").value)
+        use_room_scan_mode = bool(self.get_parameter("explore_room_scan_mode").value)
+
+        # Room-scan explorer takes over EXPLORING entirely when enabled - see
+        # tick_room_scan(). Checked before explore_frontier_mode below since
+        # they're mutually exclusive alternate EXPLORING drivers.
+        if self.state == PatrolState.EXPLORING and use_room_scan_mode:
+            self.tick_room_scan(linear_speed, angular_speed)
+            return
 
         # POSE_GOAL and EXPLORING-with-explore_frontier_mode both drive via
         # this node's own point-to-point controller (compute_steering_twist),

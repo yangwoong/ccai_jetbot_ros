@@ -31,6 +31,18 @@ patrol_node:
     explore_subgoal_timeout_seconds: 8.0
     explore_visited_cell_size_m: 0.5
     explore_candidate_count: 8
+    # Room-scan explorer (2026-07-26) - takes priority over explore_frontier_mode
+    # above when both are true. See patrol_node.py's tick_room_scan(). Time-based
+    # rotation + VLM doorway detection, not visual_odom_node yaw-fed, so it's
+    # usable even though that node's yaw tracking during rotation is unreliable
+    # (see explore_subgoal_timeout_seconds' comment). Requires CCAI_ENABLE_EXPLORE_LLM=1
+    # at launch (a second vlm_client_node instance watching the D435i) and
+    # CCAI_ENABLE_DEPTH_NAV=1 (for that D435i color feed + obstacle safety checks).
+    explore_room_scan_mode: true
+    explore_room_scan_headings: 8
+    explore_room_scan_vlm_timeout_seconds: 15.0
+    explore_room_scan_advance_seconds: 4.0
+    explore_graph_file: "data/room_graph.json"
 
 visual_odom_node:
   ros__parameters:
@@ -195,6 +207,27 @@ vlm_client_node:
     prompt: "You are monitoring a patrol robot's camera. Reply with exactly one line: start with 'RISK:' if you see something dangerous or unusual (person down, fire, smoke, collision risk, intruder, blocked path), otherwise start with 'NORMAL:'. Follow the prefix with a summary in Korean of 50 characters or fewer. No markdown, no extra lines."
     summary_max_chars: 50
     min_interval_seconds: 5.0
+    request_timeout_seconds: 35.0
+    error_event_min_interval_seconds: 30.0
+
+# Second vlm_client_node instance (see launch/patrol.launch.py's
+# CCAI_ENABLE_EXPLORE_LLM node, remapped to name "vlm_explore_node") - watches
+# the D435i front-facing color feed instead of the CSI ceiling feed the main
+# vlm_client_node above watches. api_base_url/api_key/model left empty so it
+# falls back to the same CCAI_VLLM_* env vars as the main instance - same VLM
+# endpoint, just a different camera and a much longer min_interval_seconds
+# so it never fires on its own ambient timer, only when patrol_node's
+# room-scan explorer explicitly triggers it with a question at each
+# rotation step (see patrol_node.py's room_scan_request_vlm_step).
+vlm_explore_node:
+  ros__parameters:
+    api_base_url: ""
+    api_key: ""
+    model: ""
+    image_topic: "/camera/camera/color/image_raw/compressed"
+    trigger_topic: "/ccai/vlm_explore_trigger"
+    summary_max_chars: 60
+    min_interval_seconds: 999999.0
     request_timeout_seconds: 35.0
     error_event_min_interval_seconds: 30.0
 

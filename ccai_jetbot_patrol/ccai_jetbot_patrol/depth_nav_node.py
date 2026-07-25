@@ -43,17 +43,19 @@ class DepthNavNode(Node):
     def __init__(self) -> None:
         super().__init__("depth_nav_node")
         self.declare_parameter("enabled", False)
-        # Mirrors patrol_node's own explore_frontier_mode parameter - when true,
-        # patrol_node's own point-to-point/coverage-seeking controller drives
-        # EXPLORING, not this node's reactive left/center/right steering (see
-        # patrol_node.py's compute_explore_twist). Without this, this node kept
+        # Set this true whenever patrol_node owns EXPLORING driving itself -
+        # either its explore_frontier_mode (coverage-seeking) or
+        # explore_room_scan_mode (timed rotation + VLM doorway detection, see
+        # patrol_node.py's tick_room_scan). Despite the name (kept from when
+        # only one alternate mode existed), it just means "don't drive or
+        # compete during EXPLORING here." Without this, this node kept
         # computing and publishing its own competing /ccai/vision_cmd_vel +
-        # obstacle_now during EXPLORING regardless of frontier mode, and
-        # patrol_node's obstacle-safety override would then adopt that twist
-        # wholesale any time anything was nearby - in practice, almost
-        # permanently masking the new algorithm with this node's old reactive
-        # one (symptom: "algorithm looks unchanged, robot just spins in
-        # place" - confirmed on real hardware 2026-07-25).
+        # obstacle_now during EXPLORING regardless of which patrol_node mode
+        # was active, and patrol_node's obstacle-safety override would then
+        # adopt that twist wholesale any time anything was nearby - in
+        # practice, almost permanently masking the new algorithm with this
+        # node's old reactive one (symptom: "algorithm looks unchanged, robot
+        # just spins in place" - confirmed on real hardware 2026-07-25).
         self.declare_parameter("explore_frontier_mode", False)
         self.declare_parameter("depth_image_topic", "/camera/camera/depth/image_rect_raw")
         self.declare_parameter("color_image_topic", "/camera/camera/color/image_raw")
