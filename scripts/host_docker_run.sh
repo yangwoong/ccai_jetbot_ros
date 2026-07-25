@@ -114,12 +114,19 @@ fi
 if [ "${CCAI_ENABLE_DEPTH_NAV}" = "1" ] && [ -d /dev/bus/usb ]; then
   DOCKER_ARGS+=(-v /dev/bus/usb:/dev/bus/usb)
   DOCKER_ARGS+=(--device-cgroup-rule "c 189:* rmw")
-  # D435i's raw USB traffic starting up alongside the rest of the stack has
-  # been observed to correlate with the host's Wi-Fi card (iwlwifi) crashing
-  # in a "Queue N stuck" / "Microcode SW error" loop right as this script
-  # runs - see scripts/host_fix_iwlwifi_aspm.sh for the full explanation.
-  "${SCRIPT_DIR}/host_fix_iwlwifi_aspm.sh" || echo "warning: iwlwifi ASPM auto-fix failed, continuing anyway" >&2
 fi
+
+# Confirmed fix (2026-07-25) for a real "iwlwifi ... Queue N stuck" /
+# "Microcode SW error detected. Restarting" Wi-Fi crash loop, root-caused to
+# this host's 8265 card choking on a burst of several simultaneous new
+# connections (telegram_bridge_node, vlm_client_node, etc. all reconnecting
+# at once - reproduced by unplugging Ethernet while on Wi-Fi). Not tied to
+# D435i/USB specifically, so this runs unconditionally, every run - see
+# scripts/host_fix_iwlwifi_stability.sh for the full writeup. Only writes a
+# modprobe.d file if missing/different (needs a reboot to take effect, which
+# this script cannot do for you - it will print a warning when a reboot is
+# needed).
+"${SCRIPT_DIR}/host_fix_iwlwifi_stability.sh" || echo "warning: iwlwifi stability auto-fix failed, continuing anyway" >&2
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
 

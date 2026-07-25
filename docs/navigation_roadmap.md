@@ -80,20 +80,39 @@
 
 - **자동 지역 탐색/라벨링과의 통합**: SLAM 지도가 안정적으로 검증되면, 지금은 시각 특징/타이밍 기반인 위치 저장을 그 좌표계 위에 앉히는 방식으로 재설계할 수 있습니다.
 
-### `docker run` 직후 호스트 Wi-Fi(iwlwifi)가 반복 크래시하는 문제 (2026-07-25)
+### 호스트 Wi-Fi(iwlwifi)가 반복 크래시하는 문제 (2026-07-25, 해결됨)
 
-`CCAI_ENABLE_DEPTH_NAV=1`(D435i 활성화)로 컨테이너를 띄운 직후부터, 호스트의 Intel AC 8265 Wi-Fi 카드가 `dmesg`에 아래 패턴을 20~30초 간격으로 반복하며 SSH/웹 접속이 전부 느려지는 문제가 실기에서 관찰됐습니다.
+호스트의 Intel AC 8265 Wi-Fi 카드가 `dmesg`에 아래 패턴을 반복하며, SSH/웹 접속이 계속 느려지거나 끊기는 문제가 실기에서 발생했습니다.
 
 ```
 iwlwifi 0000:01:00.0: Queue 2 stuck for 10000 ms.
 iwlwifi 0000:01:00.0: Microcode SW error detected. Restarting 0x2000000.
 ```
 
-**추정 원인 (상관관계 기반, 이 하드웨어에서 확정 검증은 안 됨)**: D435i의 RSUSB(libusb) 백엔드가 raw USB 버스에 접근하며 만드는 트래픽 + `visual_odom_node`의 프레임당 ORB/Kabsch CPU 연산이 컨테이너 기동 직후 동시에 몰리면서, 로그에도 매번 크래시 직전에 `L1 Enabled - LTR Enabled`(PCIe ASPM 절전 상태 전환)가 찍히는 걸 보면 PCIe 링크 절전 상태 전환 중 `iwlwifi` 펌웨어가 죽는 잘 알려진 유형의 버그와 일치합니다. USB/CPU 부하가 몰리는 시점과 Wi-Fi 카드 크래시 시점이 정확히 겹친다는 것 외에, 전기적으로 완전히 검증된 근본 원인은 아닙니다 — 이걸로 해결이 안 되면 D435i USB와 Wi-Fi 모듈이 같은 전원 레일을 공유하다 부하 시 전압이 흔들리는 문제일 가능성도 있습니다.
+**디버깅 과정에서 배제된 원인들** (전부 실기로 확인):
+- PCIe ASPM 절전 상태 — 런타임 정책(`performance`)과 커널 부트 인자(`pcie_aspm=off`) 둘 다 걸어봤지만 크래시가 똑같이 반복됨. 완전히 배제.
+- CPU 기아(starvation) — 크래시 구간의 `tegrastats`가 CPU 25~35%대로 전혀 포화 상태가 아니었음. 배제.
+- 약한 신호/채널 품질 — `iw dev wlan0 link`에서 `signal: -28~-29 dBm`(매우 좋음), `tx bitrate: 300 MBit/s`, `tx retries: 1`, `tx failed: 0`. 배제.
+- D435i/`visual_odom_node`의 USB 부하 — `CCAI_ENABLE_VISUAL_ODOM=0`(align_depth 끔, visual_odom_node 자체를 안 띄움)으로도 재현 시도했으나 무관하다는 게 최종적으로는 아래 확정 원인으로 대체됨.
 
-**적용한 완화책**: `scripts/host_fix_iwlwifi_aspm.sh`(신규, `host_fix_nvargus_daemon.sh`와 같은 패턴) — `/sys/module/pcie_aspm/parameters/policy`를 `performance`로 설정해서 ASPM L0s/L1 절전 상태를 링크 전체에서 비활성화합니다. 재부팅 불필요, 매번 재적용해도 안전(멱등). `host_docker_run.sh`가 `CCAI_ENABLE_DEPTH_NAV=1`일 때(=D435i USB 접근을 여는 바로 그 시점) 자동으로 이 스크립트를 실행합니다.
+**확정 원인**: 유선 랜을 연결한 채 무선 IP로 SSH 접속해 두고 유선 케이블을 뽑는 재현 테스트로 확정했습니다. 유선이 끊기는 순간 그동안 `eth0`(낮은 metric, 우선 경로)를 타던 모든 연결(`telegram_bridge_node`의 폴링/전송, `vlm_client_node`의 클라우드 호출 등)이 한꺼번에 `wlan0`로 재시도되면서, **여러 연결이 동시에 몰리는 버스트 트래픽**이 발생합니다. 이게 이 카드/드라이버/펌웨어(로드된 펌웨어 버전 `22.391740.0`) 조합의 802.11n 프레임 집계(aggregation) 큐 처리 버그를 건드려 워치독이 걸리는 것으로 확인됐습니다. 컨테이너 최초 기동 직후(194초 시점)에 크래시가 시작됐던 것도 같은 메커니즘 — 여러 노드가 동시에 외부로 연결을 시도하며 트래픽이 몰린 것.
 
-**검증 안 된 것**: 이 완화책이 실제로 크래시 루프를 멈추는지는 실기 확인이 필요합니다. 안 멈추면 커널 부트 인자로 `pcie_aspm=off`를 아예 강제하거나, D435i USB 전원을 별도 파워드 허브로 분리해서 전원 레일 공유 자체를 없애는 방향을 다음으로 시도해야 합니다.
+**적용한 수정**: `scripts/host_fix_iwlwifi_stability.sh`(신규) — `/etc/modprobe.d/iwlwifi.conf`에 `options iwlwifi 11n_disable=1 power_save=0 uapsd_disable=1`을 써서 11n 프레임 집계를 끕니다. **재부팅이 있어야 적용됩니다** (모듈 옵션이라 iwlwifi가 다시 로드될 때만 반영). `host_docker_run.sh`가 매번(D435i 활성화 여부와 무관하게, 이 문제 자체가 D435i와 무관했으므로) 이 스크립트를 실행해서 설정 파일이 없거나 다르면 새로 씁니다.
+
+**검증**: 재부팅 후 무선 IP로 SSH 접속한 채 유선 케이블을 뽑는 재현 테스트를 다시 했고, 이번엔 크래시/연결 끊김이 전혀 발생하지 않았습니다. 확정.
+
+이제 쓸모없어진 `host_fix_iwlwifi_aspm.sh`(ASPM 완화책)는 삭제했습니다.
+
+### 새로 발견된 문제: `soctherm: OC ALARM` + D435i가 USB에서 다시 사라짐 (2026-07-25, 미해결)
+
+Wi-Fi 문제를 재부팅으로 재현 테스트하던 중 콘솔에 `soctherm: OC ALARM 0x00000001`이 연속으로 찍히기 시작했고, 그 시점에 `lsusb -t`를 보면 D435i가 USB 트리에서 다시 사라져 있었습니다(`Bus 02` 5000M 허브 아래에 Video 인터페이스들이 없음).
+
+**추정 (미검증)**: `OC ALARM`은 Jetson Nano의 SoC 전류 모니터링(soctherm)이 과전류를 감지했다는 경보입니다. Jetson Nano는 기본 마이크로 USB 전원(5V/2A, 10W)으로는 D435i(USB3 고대역폭 스트리밍) + CSI 카메라 + Wi-Fi + 모터를 동시에 감당하기 빠듯한 것으로 잘 알려져 있어서, 과전류가 감지되면 보호 차원에서 포트 전원이 끊기며 D435i가 USB에서 탈락했을 가능성이 있습니다.
+
+**다음에 확인할 것**:
+1. 현재 이 로봇이 마이크로 USB(5V/2A)로 전원을 받는지, 아니면 DC 배럴잭(5V/4A) + J48 점퍼 방식인지 확인.
+2. 마이크로 USB라면 배럴잭 전원(5V/4A 이상 정격 어댑터) + J48 점퍼로 전환 — Jetson Nano에서 이 증상의 표준적인 해결책.
+3. 전환 후에도 `OC ALARM`이 재발하는지, D435i가 USB에서 안정적으로 유지되는지 재확인.
 
 ## SLAM/Nav2 포기 → 경량 커스텀 좌표 컨트롤러로 전환 (2026-07-24)
 
