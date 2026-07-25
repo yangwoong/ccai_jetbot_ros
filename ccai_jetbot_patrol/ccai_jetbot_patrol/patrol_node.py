@@ -604,14 +604,19 @@ class PatrolNode(Node):
 
         # POSE_GOAL and EXPLORING-with-explore_frontier_mode both drive via
         # this node's own point-to-point controller (compute_steering_twist),
-        # fed by visual_odom_node - not depth_nav_node/Nav2. depth_nav_node's
-        # obstacle-avoidance twist still takes priority for safety whenever it
-        # actually detects something (obstacle_now), since our own controller
-        # has no obstacle sensing of its own - it only steers toward a target
-        # coordinate.
+        # fed by visual_odom_node - not depth_nav_node/Nav2. depth_nav_node no
+        # longer drives (or publishes a competing /ccai/vision_cmd_vel) during
+        # POSE_GOAL or frontier-mode EXPLORING (see depth_nav_node.py's
+        # explore_frontier_mode param) - it's sensor-only here, so a simple
+        # stop is the safety response, not adopting its twist wholesale.
+        # Adopting depth_nav_node's own full twist here used to effectively
+        # hand driving authority back to its old reactive algorithm any time
+        # anything was nearby - in a normal room that's almost always, so it
+        # silently masked the new algorithm entirely (confirmed on real
+        # hardware 2026-07-25: "no change, robot just spins in place").
         if self.state == PatrolState.POSE_GOAL:
-            if self.is_obstacle_now() and self.use_recent_vision_cmd():
-                self.cmd_vel_pub.publish(self.last_vision_cmd)
+            if self.is_obstacle_now():
+                self.stop_motion()
                 return
             twist = self.compute_pose_goal_twist(linear_speed, angular_speed)
             if twist is None:
@@ -619,8 +624,14 @@ class PatrolNode(Node):
             self.cmd_vel_pub.publish(twist)
             return
         if self.state == PatrolState.EXPLORING and use_frontier_mode and not self.awaiting_label:
-            if self.is_obstacle_now() and self.use_recent_vision_cmd():
-                self.cmd_vel_pub.publish(self.last_vision_cmd)
+            if self.is_obstacle_now():
+                # Forget the current sub-goal too, not just stop - it was
+                # probably chosen straight toward whatever is now blocking us,
+                # so blindly resuming toward it next tick would just repeat
+                # the same stop. pick_explore_subgoal() samples several
+                # candidate directions next time and should find a clearer one.
+                self.explore_sub_goal = None
+                self.stop_motion()
                 return
             if self.has_recent_odom():
                 self.cmd_vel_pub.publish(self.compute_explore_twist(linear_speed, angular_speed))

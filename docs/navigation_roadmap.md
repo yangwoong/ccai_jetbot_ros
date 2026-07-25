@@ -143,6 +143,18 @@ visual_odom_node:
 
 "정문으로 가"/"정문에 뭐 있는지 확인해줘" 같은 임무는 `patrol_node.start_replay()`가 저장된 위치에 `pose`가 있고 최근 오도메트리 신호(`has_recent_odom()`, 기본 2초 이내)가 있으면 위 점-대-점 컨트롤러(`POSE_GOAL`)로 실제 좌표까지 이동합니다. `pose`가 없거나 오도메트리가 끊겼으면 기존 타임드 재생/시각 전용 위치 확인으로 자동 폴백합니다.
 
+### 버그: `explore_frontier_mode: true`로 켜도 알고리즘이 안 바뀌던 문제 (2026-07-25, 수정됨)
+
+실기 테스트에서 `explore_frontier_mode: true` + `visual_odom_node.enabled: true`로 켰는데도 로봇이 기존과 똑같이 제자리 회전만 반복하고 새 커버리지 탐색으로 전혀 나아가지 못하는 문제가 발생했습니다("알고리즘에 변화가 없어").
+
+**원인**: `depth_nav_node.py`의 주행 조건이 `self.mode in ("patrolling", "exploring", "pose_goal")`이라, `explore_frontier_mode`가 켜져 있어도 `patrol_node`가 `EXPLORING`/`POSE_GOAL` 상태이기만 하면 depth_nav_node는 상관없이 **자기 자신의(예전) 반응형 좌우 조향 알고리즘을 계속 계산해서 `/ccai/vision_cmd_vel`/`/ccai/vision_status`(obstacle_now 포함)에 발행**하고 있었습니다. 그런데 `patrol_node.drive_loop()`의 안전 오버라이드가 "`obstacle_now`가 true면 depth_nav_node가 최근에 발행한 twist를 그대로 채택"하는 방식이었는데, 로봇이 가구/벽으로 둘러싸인 방 안을 탐색하는 동안 `obstacle_now`는 사실상 거의 항상 true라서 — **이 오버라이드가 거의 매 tick 발동해서 새 커버리지 알고리즘의 twist를 depth_nav_node의 옛 반응형 twist로 계속 덮어썼습니다.** 즉 새 알고리즘 코드 자체는 정상 동작했지만, 안전장치가 사실상 항상 옛 알고리즘으로 되돌리고 있었던 것 — "알고리즘 변화 없음"이라는 증상과 정확히 일치합니다.
+
+**수정**:
+1. `depth_nav_node.py`에 `explore_frontier_mode` 파라미터(패트롤 노드와 동일한 값으로 `robot.yaml`에서 맞춰줌) 추가 — 이게 true면 `EXPLORING` 상태에서 더 이상 주행하지 않고(=경쟁하는 cmd_vel을 안 보냄) 장애물 센싱(`obstacle_now`)만 계속 최신 상태로 발행합니다. `POSE_GOAL`은 항상 depth_nav_node가 주행하지 않도록 이미 되어 있었습니다(패트롤 노드의 점-대-점 컨트롤러 전용).
+2. `patrol_node.py`의 안전 오버라이드를 "depth_nav_node의 twist를 그대로 채택"에서 "`obstacle_now`면 그냥 정지(`stop_motion()`)"로 단순화 — EXPLORING의 경우 정지와 함께 `self.explore_sub_goal = None`으로 목표도 버려서, 다음 tick에 막힌 방향이 아닌 새 후보 방향을 다시 샘플링하도록 했습니다.
+
+**검증**: 코드 리뷰로 원인을 특정하고 수정했습니다 — 위 두 파일 모두 컴파일 확인은 했지만, 이 특정 수정이 실기에서 실제로 "제자리 회전" 없이 전진하는지는 아직 재검증이 필요합니다.
+
 ### 아직 검증 안 된 것 (정직하게)
 
 - **카메라↔로봇 축 매핑 미검증**: 카메라 광학 좌표계(x=오른쪽, y=아래, z=전방)와 로봇 평면 좌표계(x=전방, y=왼쪽, yaw=위에서 봤을 때 반시계)의 대응이 실기에서 검증되지 않았습니다. 방향이 반대로 나오면 `visual_odom_node`의 `yaw_sign`/`lateral_sign`/`forward_sign` 파라미터(기본 전부 `1.0`)를 `-1.0`으로 뒤집어서 조정해야 합니다.

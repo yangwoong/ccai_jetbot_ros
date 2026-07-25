@@ -43,6 +43,18 @@ class DepthNavNode(Node):
     def __init__(self) -> None:
         super().__init__("depth_nav_node")
         self.declare_parameter("enabled", False)
+        # Mirrors patrol_node's own explore_frontier_mode parameter - when true,
+        # patrol_node's own point-to-point/coverage-seeking controller drives
+        # EXPLORING, not this node's reactive left/center/right steering (see
+        # patrol_node.py's compute_explore_twist). Without this, this node kept
+        # computing and publishing its own competing /ccai/vision_cmd_vel +
+        # obstacle_now during EXPLORING regardless of frontier mode, and
+        # patrol_node's obstacle-safety override would then adopt that twist
+        # wholesale any time anything was nearby - in practice, almost
+        # permanently masking the new algorithm with this node's old reactive
+        # one (symptom: "algorithm looks unchanged, robot just spins in
+        # place" - confirmed on real hardware 2026-07-25).
+        self.declare_parameter("explore_frontier_mode", False)
         self.declare_parameter("depth_image_topic", "/camera/camera/depth/image_rect_raw")
         self.declare_parameter("color_image_topic", "/camera/camera/color/image_raw")
         self.declare_parameter("debug_image_enabled", True)
@@ -134,7 +146,15 @@ class DepthNavNode(Node):
         self.last_signals = signals
         self.last_depth_frame = depth
 
-        drives_forward = self.mode in ("patrolling", "exploring", "pose_goal") or (self.mode == "manual_drive" and self.target == "move_forward")
+        frontier_mode = bool(self.get_parameter("explore_frontier_mode").value)
+        # pose_goal is always excluded from driving here: patrol_node's own
+        # point-to-point controller owns POSE_GOAL, this node is sensor-only
+        # for that state (same reasoning as the exploring+frontier_mode case
+        # below - see this node's declare_parameter comment for
+        # explore_frontier_mode).
+        drives_forward = self.mode == "patrolling" or (
+            self.mode == "exploring" and not frontier_mode
+        ) or (self.mode == "manual_drive" and self.target == "move_forward")
         if drives_forward:
             twist, detail = self.compute_patrol_command(signals)
             self.last_detail = detail
@@ -142,6 +162,12 @@ class DepthNavNode(Node):
             self.publish_status("patrol", detail=detail)
         else:
             self.last_detail = self.describe_signals(signals, suffix=" (not driving)")
+            # Still publish status (with a fresh obstacle_now) even though this
+            # node isn't driving right now - patrol_node's POSE_GOAL/frontier
+            # EXPLORING controllers consult obstacle_now as their own safety
+            # check and need it to stay live, not frozen at whatever it was
+            # when this node was last actually driving.
+            self.publish_status(self.mode, detail=self.last_detail)
 
     def on_color_image(self, msg: Image) -> None:
         if not bool(self.get_parameter("debug_image_enabled").value):
