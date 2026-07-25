@@ -114,6 +114,11 @@ fi
 if [ "${CCAI_ENABLE_DEPTH_NAV}" = "1" ] && [ -d /dev/bus/usb ]; then
   DOCKER_ARGS+=(-v /dev/bus/usb:/dev/bus/usb)
   DOCKER_ARGS+=(--device-cgroup-rule "c 189:* rmw")
+  # D435i's raw USB traffic starting up alongside the rest of the stack has
+  # been observed to correlate with the host's Wi-Fi card (iwlwifi) crashing
+  # in a "Queue N stuck" / "Microcode SW error" loop right as this script
+  # runs - see scripts/host_fix_iwlwifi_aspm.sh for the full explanation.
+  "${SCRIPT_DIR}/host_fix_iwlwifi_aspm.sh" || echo "warning: iwlwifi ASPM auto-fix failed, continuing anyway" >&2
 fi
 
 docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true

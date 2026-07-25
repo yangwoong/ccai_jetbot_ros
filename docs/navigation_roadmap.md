@@ -80,6 +80,21 @@
 
 - **자동 지역 탐색/라벨링과의 통합**: SLAM 지도가 안정적으로 검증되면, 지금은 시각 특징/타이밍 기반인 위치 저장을 그 좌표계 위에 앉히는 방식으로 재설계할 수 있습니다.
 
+### `docker run` 직후 호스트 Wi-Fi(iwlwifi)가 반복 크래시하는 문제 (2026-07-25)
+
+`CCAI_ENABLE_DEPTH_NAV=1`(D435i 활성화)로 컨테이너를 띄운 직후부터, 호스트의 Intel AC 8265 Wi-Fi 카드가 `dmesg`에 아래 패턴을 20~30초 간격으로 반복하며 SSH/웹 접속이 전부 느려지는 문제가 실기에서 관찰됐습니다.
+
+```
+iwlwifi 0000:01:00.0: Queue 2 stuck for 10000 ms.
+iwlwifi 0000:01:00.0: Microcode SW error detected. Restarting 0x2000000.
+```
+
+**추정 원인 (상관관계 기반, 이 하드웨어에서 확정 검증은 안 됨)**: D435i의 RSUSB(libusb) 백엔드가 raw USB 버스에 접근하며 만드는 트래픽 + `visual_odom_node`의 프레임당 ORB/Kabsch CPU 연산이 컨테이너 기동 직후 동시에 몰리면서, 로그에도 매번 크래시 직전에 `L1 Enabled - LTR Enabled`(PCIe ASPM 절전 상태 전환)가 찍히는 걸 보면 PCIe 링크 절전 상태 전환 중 `iwlwifi` 펌웨어가 죽는 잘 알려진 유형의 버그와 일치합니다. USB/CPU 부하가 몰리는 시점과 Wi-Fi 카드 크래시 시점이 정확히 겹친다는 것 외에, 전기적으로 완전히 검증된 근본 원인은 아닙니다 — 이걸로 해결이 안 되면 D435i USB와 Wi-Fi 모듈이 같은 전원 레일을 공유하다 부하 시 전압이 흔들리는 문제일 가능성도 있습니다.
+
+**적용한 완화책**: `scripts/host_fix_iwlwifi_aspm.sh`(신규, `host_fix_nvargus_daemon.sh`와 같은 패턴) — `/sys/module/pcie_aspm/parameters/policy`를 `performance`로 설정해서 ASPM L0s/L1 절전 상태를 링크 전체에서 비활성화합니다. 재부팅 불필요, 매번 재적용해도 안전(멱등). `host_docker_run.sh`가 `CCAI_ENABLE_DEPTH_NAV=1`일 때(=D435i USB 접근을 여는 바로 그 시점) 자동으로 이 스크립트를 실행합니다.
+
+**검증 안 된 것**: 이 완화책이 실제로 크래시 루프를 멈추는지는 실기 확인이 필요합니다. 안 멈추면 커널 부트 인자로 `pcie_aspm=off`를 아예 강제하거나, D435i USB 전원을 별도 파워드 허브로 분리해서 전원 레일 공유 자체를 없애는 방향을 다음으로 시도해야 합니다.
+
 ## SLAM/Nav2 포기 → 경량 커스텀 좌표 컨트롤러로 전환 (2026-07-24)
 
 `rtabmap_ros`/`nav2`(`navigation2`, `nav2_bringup`)/`robot_localization` 4개 패키지 모두 이 이미지의 apt 저장소에 **없는 것으로 확정**됐습니다(`scripts/install_slam_nav2.sh` 실행 결과, 전부 `E: Unable to locate package`). 이 이미지는 ROS2 Humble을 bionic에 백포트한 커스텀 조합이라 흔한 패키지도 종종 빠져 있는데(`xacro`/`diagnostic_updater` 전례), 이번엔 그 빠진 패키지가 각각 수십 개 하위 패키지짜리 큰 스택(`nav2`)이거나 g2o/GTSAM/PCL 같은 무거운 C++ 코어(`rtabmap`)를 필요로 해서, Jetson Nano 4GB RAM으로 소스 빌드를 시도하는 건(이미 pycuda/librealsense2 빌드에서 여러 번 겪은 메모리 문제 감안) 이번 세션의 "한 패키지씩 대응" 전례와는 위험도가 다르다고 판단했습니다.
