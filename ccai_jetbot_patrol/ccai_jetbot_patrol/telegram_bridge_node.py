@@ -15,9 +15,18 @@ class TelegramBridgeNode(Node):
         self.declare_parameter("allowed_chat_id", os.getenv("CCAI_TELEGRAM_ALLOWED_CHAT_ID", ""))
         self.declare_parameter("poll_seconds", 2.0)
         self.declare_parameter("notify_startup", True)
+        # When the host has no internet route (common on this robot's Wi-Fi -
+        # see docs/navigation_roadmap.md's iwlwifi crash-loop investigation),
+        # polling every 2s with no backoff just means a fresh failing HTTPS
+        # connection attempt every 2s forever, adding constant network churn
+        # on an already-struggling link. Back off exponentially on repeated
+        # failures (capped) and reset to normal on the next success.
+        self.declare_parameter("max_backoff_seconds", 60.0)
         self.admin_text_pub = self.create_publisher(String, "/ccai/admin_text", 10)
         self.create_subscription(String, "/ccai/events", self.on_event, 10)
         self.offset = 0
+        self.consecutive_poll_failures = 0
+        self.next_poll_allowed_at = 0.0
         self.create_timer(float(self.get_parameter("poll_seconds").value), self.poll)
         self.get_logger().info("telegram_bridge_node ready")
         if bool(self.get_parameter("notify_startup").value):
@@ -43,6 +52,9 @@ class TelegramBridgeNode(Node):
         token = self.param_or_env("bot_token", "CCAI_TELEGRAM_BOT_TOKEN", "")
         if not token:
             return
+        now = time.monotonic()
+        if now < self.next_poll_allowed_at:
+            return
         try:
             response = requests.get(self.api_url("getUpdates"), params={"timeout": 1, "offset": self.offset}, timeout=5)
             response.raise_for_status()
@@ -54,8 +66,15 @@ class TelegramBridgeNode(Node):
                 if self.is_allowed(chat_id) and text:
                     self.admin_text_pub.publish(String(data=text))
                     self.send_message(chat_id, f"accepted: {text}")
+            self.consecutive_poll_failures = 0
+            self.next_poll_allowed_at = 0.0
         except Exception as exc:
             self.get_logger().warning(f"telegram poll failed: {exc}")
+            self.consecutive_poll_failures += 1
+            poll_seconds = float(self.get_parameter("poll_seconds").value)
+            max_backoff = float(self.get_parameter("max_backoff_seconds").value)
+            backoff = min(poll_seconds * (2 ** self.consecutive_poll_failures), max_backoff)
+            self.next_poll_allowed_at = now + backoff
 
     def on_event(self, msg: String) -> None:
         chat_id = self.param_or_env("allowed_chat_id", "CCAI_TELEGRAM_ALLOWED_CHAT_ID", "")
