@@ -73,15 +73,31 @@ PY
 # a failure is remembered in a marker file on the bind-mounted side so it's
 # not retried on every future start. Delete the marker (or fix the
 # xlocale.h issue - a symlink to locale.h is the usual workaround) to retry.
-PYCUDA_FAIL_MARKER="${PIP_CACHE_DIR}/pycuda_build_failed"
+# v2 (2026-07-27): "TensorRT engine load failed (No module named 'pycuda')"
+# kept recurring on real hardware even after the xlocale.h workaround above
+# was added - almost certainly because a v1 marker from BEFORE that fix
+# shipped was still sitting in the bind-mounted pip cache, permanently
+# skipping every future attempt regardless of whether the underlying build
+# would now succeed. Renamed the marker to `_v2` so this fix (and the apt-first
+# attempt below) actually get one fresh try on real hardware instead of being
+# silently blocked by a stale marker from an earlier, since-fixed failure.
+# Also: try the platform's prebuilt apt package first - it's a real binary,
+# so it sidesteps the whole from-source-numpy-build class of failure
+# entirely - and only fall back to the slow pip source build if apt doesn't
+# have it.
+PYCUDA_FAIL_MARKER="${PIP_CACHE_DIR}/pycuda_build_failed_v2"
 if python3 - <<'PY' 2>/dev/null
 import pycuda.driver  # noqa: F401
 PY
 then
   : # already importable, nothing to do
 elif [ -f "${PYCUDA_FAIL_MARKER}" ]; then
-  echo "[ccai] skipping pycuda build - a previous attempt failed (marker: ${PYCUDA_FAIL_MARKER}). TensorRT YOLO path stays disabled; OpenCV DNN/HOG fallback is used instead. Delete that file to retry." >&2
+  echo "[ccai] skipping pycuda build - a previous attempt failed (marker: ${PYCUDA_FAIL_MARKER}, reason below). TensorRT YOLO path stays disabled; OpenCV DNN/HOG fallback is used instead. Delete that file to retry." >&2
+  cat "${PYCUDA_FAIL_MARKER}" >&2 2>/dev/null || true
+elif apt-get install -y python3-pycuda > "${PIP_CACHE_DIR}/pycuda_apt.log" 2>&1; then
+  echo "[ccai] pycuda installed via apt (python3-pycuda)"
 else
+  echo "[ccai] python3-pycuda not available via apt (see ${PIP_CACHE_DIR}/pycuda_apt.log) - trying pip source build"
   # The actual cause of the earlier xlocale.h failure: newer glibc merged
   # xlocale.h into locale.h and dropped the old header entirely, but the
   # numpy version pycuda pulls in (needed to build for this old Python 3.6)
@@ -92,12 +108,16 @@ else
     echo "[ccai] symlinking /usr/include/xlocale.h -> locale.h (numpy build compat)"
     ln -s /usr/include/locale.h /usr/include/xlocale.h
   fi
-  echo "[ccai] attempting pycuda install (capped at ${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}s)"
-  if timeout "${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}" python3 -m pip install pycuda; then
+  echo "[ccai] attempting pycuda pip install (capped at ${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}s)"
+  PYCUDA_BUILD_LOG="${PIP_CACHE_DIR}/pycuda_pip_build.log"
+  if timeout "${PYCUDA_BUILD_TIMEOUT_SECONDS:-600}" python3 -m pip install pycuda 2>&1 | tee "${PYCUDA_BUILD_LOG}"; then
     echo "[ccai] pycuda installed"
   else
     echo "[ccai] pycuda install failed or timed out; TensorRT YOLO path will stay disabled (OpenCV DNN/HOG fallback used instead). Won't retry on future starts - delete ${PYCUDA_FAIL_MARKER} to retry." >&2
-    touch "${PYCUDA_FAIL_MARKER}"
+    {
+      echo "pycuda pip build failed at $(date -u +%FT%TZ)"
+      tail -n 40 "${PYCUDA_BUILD_LOG}" 2>/dev/null
+    } > "${PYCUDA_FAIL_MARKER}"
   fi
 fi
 

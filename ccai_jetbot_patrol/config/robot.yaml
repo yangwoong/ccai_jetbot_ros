@@ -68,7 +68,15 @@ patrol_node:
     # "장애물 발견시 회전, 후진후 회전등 로봇 크기를 고려하여 이동" - back
     # away this long before starting the escape rotation scan, so turning
     # in place doesn't graze whatever the robot just stopped against.
-    explore_room_scan_escape_backup_seconds: 1.5
+    # "뒤에는 센서가 없어. 후진은 조금만" (2026-07-27) - shortened from an
+    # earlier 1.5s since a long blind reverse with no rear sensor is itself
+    # a collision risk.
+    explore_room_scan_escape_backup_seconds: 0.4
+    # "장애물을 잘 못피해" (2026-07-27) - cap consecutive local escape
+    # rounds in the same tight spot before giving up on fine-grained
+    # rescanning and retreating further/trying a different known direction.
+    explore_room_scan_max_escape_rounds: 3
+    explore_room_scan_deep_backup_seconds: 2.0
     # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
     # comment. Fed into the VLM obstacle/scan prompts so it judges passability
     # against this robot's real footprint, not a guess.
