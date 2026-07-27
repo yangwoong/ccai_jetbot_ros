@@ -61,6 +61,11 @@ patrol_node:
     # this many times at the root spot before actually declaring the
     # mission done, instead of stopping after the first empty sweep.
     explore_room_scan_max_root_retries: 3
+    # "LLM이 적극 개입하여 자율탐색" - see room_scan_begin_obstacle_check's
+    # declare_parameter comment. Before abandoning a direction the VLM
+    # already judged movable, ask it to confirm from the close-up view
+    # whether it's actually blocked or just narrow, this many times.
+    explore_room_scan_max_obstacle_overrides: 2
 
 visual_odom_node:
   ros__parameters:

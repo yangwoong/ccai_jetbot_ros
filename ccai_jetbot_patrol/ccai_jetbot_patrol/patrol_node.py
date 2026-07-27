@@ -137,6 +137,22 @@ class PatrolNode(Node):
         # before actually declaring the mission done - see
         # room_scan_begin_backtrack_or_finish.
         self.declare_parameter("explore_room_scan_max_root_retries", 3)
+        # "LLM이 적극 개입하여 영상을 분석하며 자율탐색" - confirmed on real
+        # hardware: the D435i's raw obstacle_now (a flat depth threshold)
+        # kept aborting directions the VLM had itself already judged
+        # passable ("YES 복도, 의자, 테이블") the moment the robot started
+        # driving toward them, repeatedly emptying every candidate direction
+        # and ending the mission even though a way through genuinely existed
+        # (narrow gaps between furniture read as "blocked" by a flat
+        # distance threshold even when a slow, careful robot could fit).
+        # When advance_doorway hits an obstacle now, instead of immediately
+        # giving up on that direction, stop and ask the VLM to look at the
+        # close-up view and confirm whether it's actually passable
+        # (room_scan_request_obstacle_check) - only abandon the direction if
+        # the VLM agrees it's genuinely blocked, or after this many
+        # overrides on the same attempt (the physical safety stop itself is
+        # never disabled - this only decides whether to keep trying past it).
+        self.declare_parameter("explore_room_scan_max_obstacle_overrides", 2)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -207,6 +223,7 @@ class PatrolNode(Node):
         self.room_scan_ceiling_direction_hint = None
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
+        self.room_scan_obstacle_override_count = 0
         self._room_scan_last_logged_phase = "<never>"
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -803,6 +820,7 @@ class PatrolNode(Node):
             return
         self.explore_graph.mark_observation_tried(room_id, doorway["step"])
         self.room_scan_pending_doorway_step = doorway["step"]
+        self.room_scan_obstacle_override_count = 0
         delta = (doorway["step"] - self.room_scan_heading_step) % self.room_scan_total_steps
         self.publish_event(f"'{doorway['description']}' 방향(천장 힌트: {self.room_scan_ceiling_direction_hint or '없음'})으로 이동합니다")
         self.room_scan_begin_rotate(delta, "advance_doorway")
@@ -889,6 +907,51 @@ class PatrolNode(Node):
         self.room_scan_heading_step = self.room_scan_pending_doorway_step
         self.room_scan_advance_after_label()
 
+    def room_scan_begin_obstacle_check(self) -> None:
+        max_overrides = int(self.get_parameter("explore_room_scan_max_obstacle_overrides").value)
+        if self.room_scan_obstacle_override_count >= max_overrides:
+            self.room_scan_abort_advance()
+            return
+        self.room_scan_settle_next = "obstacle_check"
+        self.room_phase = "settling"
+        self.room_scan_phase_started_at = time.monotonic()
+
+    def room_scan_request_obstacle_check(self) -> None:
+        self.room_scan_vlm_ready = False
+        self.room_scan_vlm_text = ""
+        self.room_scan_phase_started_at = time.monotonic()
+        self.room_phase = "await_obstacle_check"
+        question = (
+            "로봇이 이 방향으로 전진하다가 정면 장애물 센서에 뭔가 걸렸습니다. 이 사진을 보고 로봇"
+            "(폭 약 15cm, 천천히 이동 중)이 조금 더 지나갈 틈이 있는지 판단해줘. 좁아도 지나갈 수 "
+            "있으면 'PASS:YES'로 시작하고, 완전히 막혀서 못 가면 'PASS:NO'로 시작해서 10자 이내로 "
+            "이유를 적어줘."
+        )
+        self.get_logger().info("[room_scan] obstacle_check vlm_explore_trigger sent")
+        self.vlm_explore_trigger_pub.publish(String(data=json.dumps({"question": question}, ensure_ascii=False)))
+
+    def room_scan_process_obstacle_check_result(self) -> None:
+        text = (self.room_scan_vlm_text or "").strip()
+        passable = text.upper().startswith("PASS:YES")
+        self.publish_event(f"장애물 재확인(LLM): {text[:40]}")
+        if not passable:
+            self.room_scan_abort_advance()
+            return
+        max_overrides = int(self.get_parameter("explore_room_scan_max_obstacle_overrides").value)
+        self.room_scan_obstacle_override_count += 1
+        self.get_logger().info(
+            f"[room_scan] obstacle override granted "
+            f"({self.room_scan_obstacle_override_count}/{max_overrides})"
+        )
+        # Fresh advance window (not the leftover of the interrupted one) -
+        # depth_nav_node's obstacle_now is still checked every tick from
+        # here, so a genuine collision risk still stops the robot
+        # immediately regardless of this override; this only decided
+        # whether to keep *trying* past a reading that alone would have
+        # ended the attempt.
+        self.room_phase = "advance_doorway"
+        self.room_scan_phase_started_at = time.monotonic()
+
     def room_scan_finish_backtrack(self) -> None:
         room_id = self.room_scan_current_room_id
         k = self.explore_graph.entered_via_step_of(room_id)
@@ -912,6 +975,7 @@ class PatrolNode(Node):
             return
         self.explore_graph.mark_observation_tried(room_id, doorway["step"])
         self.room_scan_pending_doorway_step = doorway["step"]
+        self.room_scan_obstacle_override_count = 0
         self.publish_event(f"이전 방에서 '{doorway['description']}' 방향으로 이동합니다")
         self.room_scan_begin_rotate(doorway["step"], "advance_doorway")
 
@@ -974,6 +1038,8 @@ class PatrolNode(Node):
                 return
             if self.room_scan_settle_next == "vlm_step":
                 self.room_scan_request_vlm_step()
+            elif self.room_scan_settle_next == "obstacle_check":
+                self.room_scan_request_obstacle_check()
             else:
                 self.room_scan_request_ceiling_analysis()
             return
@@ -994,6 +1060,21 @@ class PatrolNode(Node):
             self.room_scan_process_vlm_step_result()
             return
 
+        if self.room_phase == "await_obstacle_check":
+            timeout = float(self.get_parameter("explore_room_scan_vlm_timeout_seconds").value)
+            if not self.room_scan_vlm_ready:
+                if time.monotonic() - self.room_scan_phase_started_at > timeout:
+                    self.get_logger().warning(
+                        f"[room_scan] obstacle_check vlm response timed out after {timeout}s - treating as PASS:NO"
+                    )
+                    self.room_scan_vlm_text = "PASS:NO (응답 시간 초과)"
+                    self.room_scan_vlm_ready = True
+                else:
+                    self.stop_motion()
+                    return
+            self.room_scan_process_obstacle_check_result()
+            return
+
         if self.room_phase in ("await_ceiling", "await_label"):
             self.stop_motion()
             return
@@ -1002,7 +1083,10 @@ class PatrolNode(Node):
             if self.is_obstacle_now():
                 self.stop_motion()
                 if self.room_phase == "advance_doorway":
-                    self.room_scan_abort_advance()
+                    # Ask the VLM to confirm before giving up on this
+                    # direction entirely - see room_scan_begin_obstacle_check's
+                    # declare_parameter comment (explore_room_scan_max_obstacle_overrides).
+                    self.room_scan_begin_obstacle_check()
                 else:
                     # backtrack_advance doesn't abort (this path was clear
                     # moments ago, most likely a transient) - just wait, and
