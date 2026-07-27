@@ -1481,7 +1481,17 @@ class PatrolNode(Node):
                 return
             self.stop_motion()
             self.room_scan_root_retry_count = 0
-            self.room_scan_is_retry_sweep = False
+            # True, NOT False: confirmed on real hardware that this was
+            # asking for a ceiling analysis + a brand new room label
+            # ("작은방 입구" on top of the already-saved "작은방") even
+            # though the robot never actually left the room - a blind
+            # reposition is still the SAME room, just a different vantage
+            # point within it, exactly like the fractional-offset retry
+            # sweep it's a fallback for. is_retry_sweep=True skips straight
+            # to picking a direction once the fresh sweep finishes, instead
+            # of re-triggering the "first time in a new room" ceiling/label
+            # flow.
+            self.room_scan_is_retry_sweep = True
             self.room_scan_steps_done_this_sweep = 0
             self.room_scan_heading_step = 0
             # Settle before asking the VLM anything, same as every other

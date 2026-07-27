@@ -143,7 +143,16 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="turn_left", raw=message)
     if "우회전" in lowered or ("오른쪽" in lowered and ("회전" in lowered or "돌" in lowered)):
         return MissionCommand(type="turn_right", raw=message)
-    if "회전" in lowered or "돌아" in lowered:
+    # "돌아" alone is ambiguous in Korean - it's the stem of both 돌다/돌리다
+    # ("turn") and 돌아오다/돌아가다 ("come back"/"return"), and confirmed on
+    # real hardware that "작은방으로 돌아와" (come back to 작은방) matched
+    # here purely because it contains "돌아", spinning the robot in place
+    # continuously instead of doing anything resembling "return" - the
+    # opposite of what was asked. Exclude the return-verb conjugations so
+    # those fall through to the LLM router instead of a false-positive turn.
+    if "회전" in lowered or ("돌아" in lowered and not any(
+        k in lowered for k in ("돌아와", "돌아옴", "돌아왔", "돌아갈", "돌아가", "복귀")
+    )):
         return MissionCommand(type="turn_right", raw=message)
     if "빠르게" in lowered or ("속도" in lowered and ("높여" in lowered or "올려" in lowered)):
         return MissionCommand(type="set_speed", target="up", raw=message)
