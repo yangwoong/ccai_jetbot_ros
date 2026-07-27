@@ -161,6 +161,20 @@ class PatrolNode(Node):
         self.declare_parameter("robot_width_m", 0.18)
         self.declare_parameter("robot_length_m", 0.18)
         self.declare_parameter("robot_height_m", 0.25)
+        # Confirmed on real hardware (2026-07-27): a correctly-identified
+        # door ("출입구: YES, 문과 복도 연결됨") got permanently abandoned
+        # after a SINGLE advance burst that reached partway there but not
+        # actually through it (room_scan_begin_new_room_check judged
+        # NEWROOM:NO - still the same room, correctly, since the door hadn't
+        # been reached yet) - the code then picked a totally different
+        # direction instead of just continuing toward the door it had
+        # already found, so the robot never actually made it out even though
+        # it identified the exit correctly on the first sweep. When a
+        # same-room verdict follows a move toward a DOOR-category
+        # observation (not a plain FLOOR one), keep advancing in that same
+        # direction instead of picking a new one, up to this many additional
+        # bursts - see room_scan_same_room_continue.
+        self.declare_parameter("explore_room_scan_max_door_chase", 4)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -232,6 +246,7 @@ class PatrolNode(Node):
         self.room_scan_ceiling_direction_hint = None
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
+        self.room_scan_door_chase_count = 0
         self.room_scan_obstacle_override_count = 0
         self._room_scan_last_logged_phase = "<never>"
 
@@ -526,6 +541,7 @@ class PatrolNode(Node):
         self.room_scan_ceiling_direction_hint = None
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
+        self.room_scan_door_chase_count = 0
         degrees = 360 // self.room_scan_total_steps
         self.publish_event(
             f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향의 특징을 확인, "
@@ -861,6 +877,7 @@ class PatrolNode(Node):
         self.explore_graph.mark_observation_tried(room_id, doorway["step"])
         self.room_scan_pending_doorway_step = doorway["step"]
         self.room_scan_obstacle_override_count = 0
+        self.room_scan_door_chase_count = 0
         delta = (doorway["step"] - self.room_scan_heading_step) % self.room_scan_total_steps
         self.publish_event(f"'{doorway['description']}' 방향(천장 힌트: {self.room_scan_ceiling_direction_hint or '없음'})으로 이동합니다")
         self.room_scan_begin_rotate(delta, "advance_doorway")
@@ -950,8 +967,33 @@ class PatrolNode(Node):
         )
         self.request_analysis(question, location="")
 
+    def room_scan_observation_category(self, room_id: str, step) -> str:
+        for obs in self.explore_graph.rooms.get(room_id, {}).get("observations", []):
+            if obs["step"] == step:
+                return obs.get("category", "floor")
+        return "floor"
+
     def room_scan_same_room_continue(self) -> None:
+        # Confirmed on real hardware: a correctly-identified DOOR got
+        # abandoned after one partial advance that didn't actually reach it
+        # yet (this same-room verdict just means "not through it yet", not
+        # "wrong direction"). Keep pushing toward a door candidate instead
+        # of jumping to a different one, up to explore_room_scan_max_door_chase
+        # extra bursts - only fall back to picking a new direction for a
+        # plain FLOOR move (which was never claiming to lead anywhere new)
+        # or once the chase limit is reached.
+        category = self.room_scan_observation_category(self.room_scan_current_room_id, self.room_scan_pending_doorway_step)
+        max_chase = int(self.get_parameter("explore_room_scan_max_door_chase").value)
+        if category == "door" and self.room_scan_door_chase_count < max_chase:
+            self.room_scan_door_chase_count += 1
+            self.publish_event(
+                f"출입구 방향으로 계속 전진합니다 (아직 통과 전, {self.room_scan_door_chase_count}/{max_chase})"
+            )
+            self.room_phase = "advance_doorway"
+            self.room_scan_phase_started_at = time.monotonic()
+            return
         self.publish_event("같은 공간으로 판단 - 새 지점으로 등록하지 않고 다른 방향을 계속 찾습니다")
+        self.room_scan_door_chase_count = 0
         self.room_scan_advance_after_label()
 
     def room_scan_enter_new_room(self) -> None:
@@ -963,6 +1005,7 @@ class PatrolNode(Node):
         self.room_scan_steps_done_this_sweep = 0
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
+        self.room_scan_door_chase_count = 0
         self.publish_event("새 지점 도착 - 특징 탐색 계속")
         # Settle before the very first VLM request here too, same as every
         # other rotation-then-ask transition (room_scan_complete_rotation) -

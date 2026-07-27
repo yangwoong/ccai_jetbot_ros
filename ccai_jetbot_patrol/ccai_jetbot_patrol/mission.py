@@ -77,8 +77,18 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="inspect", target=raw.split(" ", 1)[1], text=raw, raw=message)
     if "순찰" in lowered and ("시작" in lowered or "출발" in lowered):
         return MissionCommand(type="patrol_start", raw=message)
+    # "계속" (keep going/continue) overrides a stop-word match below - without
+    # this, "왜 멈춰? 계속 탐색해" (why did you stop? keep exploring) matched
+    # the stop-word branch purely because "멈춰" is in there too, and did the
+    # opposite of what the admin actually asked for (confirmed on real
+    # hardware). A stop word next to "계속" almost always means "don't stop"/
+    # "keep going", not "stop".
+    if "순찰" in lowered and "계속" in lowered:
+        return MissionCommand(type="patrol_start", raw=message)
     if "순찰" in lowered and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
         return MissionCommand(type="patrol_stop", raw=message)
+    if ("탐색" in lowered or "탐험" in lowered) and "계속" in lowered:
+        return MissionCommand(type="explore_start", raw=message)
     if ("탐색" in lowered or "탐험" in lowered) and ("중지" in lowered or "정지" in lowered or "멈" in lowered):
         return MissionCommand(type="explore_stop", raw=message)
     if "탐색" in lowered or "탐험" in lowered:

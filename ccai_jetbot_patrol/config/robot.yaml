@@ -67,6 +67,11 @@ patrol_node:
     robot_width_m: 0.18
     robot_length_m: 0.18
     robot_height_m: 0.25
+    # A correctly-identified door was getting abandoned after one partial
+    # advance that hadn't actually reached it yet - see
+    # room_scan_same_room_continue's comment. Extra bursts to keep pushing
+    # toward a door candidate before giving up on it.
+    explore_room_scan_max_door_chase: 4
 
 visual_odom_node:
   ros__parameters:
