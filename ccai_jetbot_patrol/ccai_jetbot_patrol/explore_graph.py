@@ -5,14 +5,16 @@ from typing import Dict, List, Optional
 
 class RoomGraph:
     """Topological (not geometric) map built by patrol_node's room-scan
-    explorer: each room is a node with a list of doorways (detected via VLM
-    during a 45-degree rotation sweep) and a pointer to its parent room (the
-    doorway it was entered through). This is deliberately NOT a floor plan
-    with real dimensions/coordinates - this robot has no occupancy-grid SLAM
-    (see docs/navigation_roadmap.md for why rtabmap/Nav2 were dropped this
-    session), so "which room connects to which through which doorway" is the
-    most this sensor set can honestly support. Persisted to JSON so the map
-    survives a restart, the same way locations.json does.
+    explorer: each room is a node with a list of per-heading observations
+    (features seen during the 45-degree rotation sweep, each tagged movable
+    or not) and a pointer to its parent room (the doorway/opening it was
+    entered through). This is deliberately NOT a floor plan with real
+    dimensions/coordinates - this robot has no occupancy-grid SLAM (see
+    docs/navigation_roadmap.md for why rtabmap/Nav2 were dropped this
+    session), so "what does each direction from this spot look like, and
+    which room connects to which through which opening" is the most this
+    sensor set can honestly support. Persisted to JSON so the map survives a
+    restart, the same way locations.json does.
     """
 
     def __init__(self, path: str) -> None:
@@ -43,7 +45,10 @@ class RoomGraph:
         self.next_room_id += 1
         self.rooms[room_id] = {
             "label": None,
-            "doorways": [],  # [{"step": int, "description": str, "tried": bool}]
+            # every heading observed during the sweep, whether movable or
+            # not - see patrol_node.py's room_scan_process_vlm_step_result.
+            # [{"step": int, "description": str, "movable": bool, "tried": bool}]
+            "observations": [],
             "ceiling_description": "",
             "parent_room_id": parent_room_id,
             "entered_via_step": entered_via_step,
@@ -51,8 +56,10 @@ class RoomGraph:
         self.save()
         return room_id
 
-    def add_doorway(self, room_id: str, step: int, description: str) -> None:
-        self.rooms[room_id]["doorways"].append({"step": step, "description": description, "tried": False})
+    def add_observation(self, room_id: str, step: int, description: str, movable: bool) -> None:
+        self.rooms[room_id]["observations"].append(
+            {"step": step, "description": description, "movable": movable, "tried": False}
+        )
         self.save()
 
     def set_label(self, room_id: str, label: str) -> None:
@@ -63,16 +70,17 @@ class RoomGraph:
         self.rooms[room_id]["ceiling_description"] = description
         self.save()
 
-    def next_untried_doorway(self, room_id: str) -> Optional[dict]:
-        for doorway in self.rooms.get(room_id, {}).get("doorways", []):
-            if not doorway["tried"]:
-                return doorway
-        return None
+    def untried_movable(self, room_id: str) -> List[dict]:
+        return [
+            obs
+            for obs in self.rooms.get(room_id, {}).get("observations", [])
+            if obs.get("movable") and not obs.get("tried")
+        ]
 
-    def mark_doorway_tried(self, room_id: str, step: int) -> None:
-        for doorway in self.rooms.get(room_id, {}).get("doorways", []):
-            if doorway["step"] == step:
-                doorway["tried"] = True
+    def mark_observation_tried(self, room_id: str, step: int) -> None:
+        for obs in self.rooms.get(room_id, {}).get("observations", []):
+            if obs["step"] == step:
+                obs["tried"] = True
         self.save()
 
     def parent_of(self, room_id: str) -> Optional[str]:
@@ -88,6 +96,10 @@ class RoomGraph:
         lines = []
         for room_id, room in self.rooms.items():
             label = room.get("label") or f"(이름없음#{room_id})"
-            doorway_count = len(room.get("doorways", []))
-            lines.append(f"{label}: 출입구 {doorway_count}개, 천장 {room.get('ceiling_description') or '미기록'}")
+            observations = room.get("observations", [])
+            movable_count = sum(1 for obs in observations if obs.get("movable"))
+            lines.append(
+                f"{label}: 관찰된 특징 {len(observations)}개(이동가능 {movable_count}개), "
+                f"천장 {room.get('ceiling_description') or '미기록'}"
+            )
         return lines

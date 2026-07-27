@@ -177,7 +177,6 @@ class PatrolNode(Node):
         self.room_scan_total_steps = 8
         self.room_scan_current_room_id = None
         self.room_scan_heading_step = 0
-        self.room_scan_doorways = []
         self.room_scan_rotate_delta = 0
         self.room_scan_rotate_started_at = 0.0
         self.room_scan_next_phase = ""
@@ -188,6 +187,7 @@ class PatrolNode(Node):
         self.room_scan_awaiting_ceiling = False
         self.room_scan_pending_doorway_step = 0
         self.room_scan_settle_next = ""
+        self.room_scan_ceiling_direction_hint = None
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -472,13 +472,13 @@ class PatrolNode(Node):
         room_id = self.explore_graph.start_room(parent_room_id=None, entered_via_step=None)
         self.room_scan_current_room_id = room_id
         self.room_scan_heading_step = 0
-        self.room_scan_doorways = []
         self.room_scan_awaiting_label = False
         self.room_scan_awaiting_ceiling = False
+        self.room_scan_ceiling_direction_hint = None
         degrees = 360 // self.room_scan_total_steps
         self.publish_event(
-            f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향을 확인, "
-            "출입구를 찾으면 그쪽으로 이동합니다"
+            f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향의 특징을 확인, "
+            "천장 모양을 참고해 안 가본 방향으로 이동합니다"
         )
         self.room_scan_request_vlm_step()
 
@@ -659,13 +659,17 @@ class PatrolNode(Node):
         can_go = upper.startswith("GO:YES") or (
             "GO:NO" not in upper and any(k in text for k in ("출입구", "통로", "문이", "문 ", "열린", "공간"))
         )
-        if can_go:
-            description = text.split(":", 1)[1].strip() if ":" in text else text
-            if description.upper().startswith("YES:"):
-                description = description[4:].strip()
-            self.explore_graph.add_doorway(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30])
-            degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
-            self.publish_event(f"{degrees}도 방향 - 이동 가능: {description[:30]}")
+        description = text.split(":", 1)[1].strip() if ":" in text else text
+        if description.upper().startswith(("YES:", "NO:")):
+            description = description.split(":", 1)[1].strip()
+        # Every heading's feature is remembered (per user request: the VLM
+        # judgment - what's visible here - IS the map, not just doorways),
+        # and separately flagged movable/not so room_scan_pick_doorway() can
+        # still find only the directions worth actually driving toward.
+        self.explore_graph.add_observation(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30], can_go)
+        degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
+        tag = "이동 가능" if can_go else "특징"
+        self.publish_event(f"{degrees}도 방향 - {tag}: {description[:30]}")
         if self.room_scan_heading_step < self.room_scan_total_steps - 1:
             self.room_scan_begin_rotate(1, "await_vlm_step")
         else:
@@ -675,7 +679,17 @@ class PatrolNode(Node):
         self.room_scan_awaiting_ceiling = True
         self.room_phase = "await_ceiling"
         self.room_scan_phase_started_at = time.monotonic()
-        self.request_analysis("천장의 모양과 이 공간의 대략적인 크기를 15자 이내로 한국어로 설명해줘", location="")
+        # Also asks for a preferred direction - the ceiling shape (corridor
+        # direction, where the room extends, where it looks lower/higher)
+        # feeds room_scan_pick_doorway() below, so movement is chosen by
+        # "which way does the ceiling suggest is worth exploring", not just
+        # "first untried doorway in scan order".
+        self.request_analysis(
+            "천장의 모양과 이 공간의 대략적인 크기를 15자 이내로 한국어로 설명해줘. 그리고 로봇이 계속 "
+            "탐색하기 좋아 보이는 방향을 '방향:왼쪽', '방향:오른쪽', '방향:직진', '방향:후진' 중 하나로 "
+            "마지막에 덧붙여줘.",
+            location="",
+        )
 
     def room_scan_begin_await_label(self) -> None:
         self.room_scan_awaiting_label = True
@@ -699,16 +713,51 @@ class PatrolNode(Node):
         self.room_scan_awaiting_label = False
         self.room_scan_advance_after_label()
 
+    def parse_ceiling_direction_hint(self, text: str):
+        if "왼쪽" in text:
+            return "좌"
+        if "오른쪽" in text:
+            return "우"
+        if "직진" in text:
+            return "직진"
+        if "후진" in text:
+            return "후진"
+        return None
+
+    def room_scan_pick_doorway(self, room_id: str):
+        """Among this room's untried movement candidates (doorways or just
+        open-looking headings - see room_scan_process_vlm_step_result), pick
+        whichever is closest to the ceiling-shape-informed direction hint
+        (room_scan_ceiling_direction_hint, from room_scan_request_ceiling_analysis)
+        instead of always the first one found during the sweep - this is what
+        makes movement follow "which way does the ceiling suggest is worth
+        exploring" rather than an arbitrary scan-order pick.
+        """
+        candidates = self.explore_graph.untried_movable(room_id)
+        if not candidates:
+            return None
+        hint = self.room_scan_ceiling_direction_hint
+        total = self.room_scan_total_steps
+        ideal = {"좌": total * 0.25, "우": total * 0.75, "직진": 0.0, "후진": total * 0.5}.get(hint)
+        if ideal is None:
+            return candidates[0]
+
+        def offset(step: int) -> float:
+            diff = abs(step - ideal) % total
+            return min(diff, total - diff)
+
+        return min(candidates, key=lambda d: offset(d["step"]))
+
     def room_scan_advance_after_label(self) -> None:
         room_id = self.room_scan_current_room_id
-        doorway = self.explore_graph.next_untried_doorway(room_id)
+        doorway = self.room_scan_pick_doorway(room_id)
         if doorway is None:
             self.room_scan_begin_backtrack_or_finish()
             return
-        self.explore_graph.mark_doorway_tried(room_id, doorway["step"])
+        self.explore_graph.mark_observation_tried(room_id, doorway["step"])
         self.room_scan_pending_doorway_step = doorway["step"]
         delta = (doorway["step"] - self.room_scan_heading_step) % self.room_scan_total_steps
-        self.publish_event(f"출입구({doorway['description']})로 이동합니다")
+        self.publish_event(f"'{doorway['description']}' 방향(천장 힌트: {self.room_scan_ceiling_direction_hint or '없음'})으로 이동합니다")
         self.room_scan_begin_rotate(delta, "advance_doorway")
 
     def room_scan_begin_backtrack_or_finish(self) -> None:
@@ -755,8 +804,14 @@ class PatrolNode(Node):
         room_id = self.explore_graph.start_room(parent_room_id=parent_id, entered_via_step=entered_via)
         self.room_scan_current_room_id = room_id
         self.room_scan_heading_step = 0
-        self.publish_event("새 방으로 진입 - 탐색 계속")
-        self.room_scan_request_vlm_step()
+        self.publish_event("새 지점 도착 - 특징 탐색 계속")
+        # Settle before the very first VLM request here too, same as every
+        # other rotation-then-ask transition (room_scan_complete_rotation) -
+        # this one was missed before (2026-07-27 fix): arriving off a forward
+        # drive can leave residual motion/blur just as much as a rotation.
+        self.room_scan_settle_next = "vlm_step"
+        self.room_phase = "settling"
+        self.room_scan_phase_started_at = time.monotonic()
 
     def room_scan_abort_advance(self) -> None:
         self.publish_event("이동 중 장애물 감지 - 이 출입구는 포기하고 다른 방향을 찾습니다")
@@ -780,13 +835,13 @@ class PatrolNode(Node):
     def room_scan_after_backtrack_correct(self) -> None:
         self.room_scan_heading_step = 0
         room_id = self.room_scan_current_room_id
-        doorway = self.explore_graph.next_untried_doorway(room_id)
+        doorway = self.room_scan_pick_doorway(room_id)
         if doorway is None:
             self.room_scan_begin_backtrack_or_finish()
             return
-        self.explore_graph.mark_doorway_tried(room_id, doorway["step"])
+        self.explore_graph.mark_observation_tried(room_id, doorway["step"])
         self.room_scan_pending_doorway_step = doorway["step"]
-        self.publish_event(f"이전 방에서 다른 출입구({doorway['description']})로 이동합니다")
+        self.publish_event(f"이전 방에서 '{doorway['description']}' 방향으로 이동합니다")
         self.room_scan_begin_rotate(doorway["step"], "advance_doorway")
 
     def tick_room_scan(self) -> None:
@@ -934,6 +989,7 @@ class PatrolNode(Node):
             self.pending_analysis = False
             self.pending_analysis_location = ""
             self.explore_graph.set_ceiling_description(self.room_scan_current_room_id, summary[:60])
+            self.room_scan_ceiling_direction_hint = self.parse_ceiling_direction_hint(summary)
             self.publish_event(f"천장/공간 특징: {summary[:60]}")
             self.room_scan_begin_await_label()
             return
