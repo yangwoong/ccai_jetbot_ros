@@ -88,7 +88,20 @@ def generate_launch_description():
     config = PathJoinSubstitution([FindPackageShare("ccai_jetbot_patrol"), "config", "robot.yaml"])
     nodes = []
     if env_enabled("CCAI_ENABLE_HARDWARE", True):
-        nodes.append(Node(package="ccai_jetbot_patrol", executable="jetbot_hardware_node", name="jetbot_hardware_node", parameters=[config], output="screen"))
+        # respawn=True (2026-07-28): confirmed on real hardware that an
+        # unhandled exception in this node (an OLED/display crash, in one
+        # case) takes motor control down with it for the rest of the
+        # session, since this same process owns /cmd_vel - and nothing
+        # here was set up to restart it. The specific crash that triggered
+        # this is fixed (see jetbot_hardware_node.py's draw_ascii_text), but
+        # any *other* future fault (I2C hiccup, etc.) shouldn't be able to
+        # permanently kill driving for the rest of the run either.
+        nodes.append(
+            Node(
+                package="ccai_jetbot_patrol", executable="jetbot_hardware_node", name="jetbot_hardware_node",
+                parameters=[config], output="screen", respawn=True, respawn_delay=1.0,
+            )
+        )
     if env_enabled("CCAI_ENABLE_CAMERA", True):
         nodes.append(Node(package="ccai_jetbot_patrol", executable="camera_node", name="camera_node", parameters=[config, camera_parameters()], output="screen"))
     if env_enabled("CCAI_ENABLE_VISION", True):

@@ -251,6 +251,27 @@ class StatusLed:
             self.gpio.cleanup(self.pin)
 
 
+def draw_ascii_text(draw, position, text: str, font) -> None:
+    """PIL's ImageFont.load_default() is a built-in bitmap font that can
+    only render Latin-1/ASCII glyphs - confirmed on real hardware that
+    passing it Korean text (배터리 ...) raised UnicodeEncodeError deep
+    inside PIL, which crashed this entire node (motors included, since this
+    is the same process that owns cmd_vel) every ~2 seconds on the OLED
+    refresh timer ("모터가 전혀 움직이지 않아" / "OLED에 아무것도 표시되지
+    않아" - the process was dying before it ever finished starting up).
+    Two layers of defense: (1) callers should pass ASCII-only text in the
+    first place (see publish_hardware_status), and (2) this still
+    ascii-encodes-with-replace and never lets a drawing/font problem
+    propagate up and take the node down - this is a display nicety, not
+    something worth losing motor control over.
+    """
+    try:
+        safe = text[:21].encode("ascii", errors="replace").decode("ascii")
+        draw.text(position, safe, font=font, fill=255)
+    except Exception:
+        pass
+
+
 class OledDisplay:
     def __init__(self, enabled: bool, bus: int, logger) -> None:
         self.enabled = enabled
@@ -297,17 +318,23 @@ class OledDisplay:
     def show(self, line1: str, line2: str, line3: str = "") -> None:
         if self.display is None:
             return
-        if isinstance(self.display, RawSsd1306Display):
-            self.display.show(line1, line2, line3)
-            return
-        width = self.display.width
-        height = self.display.height
-        self.draw.rectangle((0, 0, width, height), outline=0, fill=0)
-        self.draw.text((0, 0), line1[:21], font=self.font, fill=255)
-        self.draw.text((0, 11), line2[:21], font=self.font, fill=255)
-        self.draw.text((0, 22), line3[:21], font=self.font, fill=255)
-        self.display.image(self.image)
-        self.display.display()
+        try:
+            if isinstance(self.display, RawSsd1306Display):
+                self.display.show(line1, line2, line3)
+                return
+            width = self.display.width
+            height = self.display.height
+            self.draw.rectangle((0, 0, width, height), outline=0, fill=0)
+            draw_ascii_text(self.draw, (0, 0), line1, self.font)
+            draw_ascii_text(self.draw, (0, 11), line2, self.font)
+            draw_ascii_text(self.draw, (0, 22), line3, self.font)
+            self.display.image(self.image)
+            self.display.display()
+        except Exception as exc:
+            # A display/I2C hiccup here must never take the whole node down
+            # (motors are owned by this same process) - see draw_ascii_text's
+            # comment for the exact incident this guards against.
+            self.logger.debug("OLED update failed: {0}".format(exc))
 
     def clear(self) -> None:
         if self.display is not None:
@@ -374,11 +401,16 @@ class RawSsd1306Display:
         self.clear()
 
     def show(self, line1: str, line2: str, line3: str = "") -> None:
-        self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
-        self.draw.text((0, 0), line1[:21], font=self.font, fill=255)
-        self.draw.text((0, 11), line2[:21], font=self.font, fill=255)
-        self.draw.text((0, 22), line3[:21], font=self.font, fill=255)
-        self.flush()
+        try:
+            self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
+            draw_ascii_text(self.draw, (0, 0), line1, self.font)
+            draw_ascii_text(self.draw, (0, 11), line2, self.font)
+            draw_ascii_text(self.draw, (0, 22), line3, self.font)
+            self.flush()
+        except Exception:
+            # An I2C hiccup writing to the OLED must never take the whole
+            # node down - motors are owned by this same process.
+            pass
 
     def clear(self) -> None:
         self.draw.rectangle((0, 0, self.width, self.height), outline=0, fill=0)
@@ -540,7 +572,10 @@ class JetBotHardwareNode(Node):
     def publish_hardware_status(self) -> None:
         ip_address = get_ip_address()
         percent = self.battery.read_percent()
-        battery_text = "배터리 {0:.0f}%".format(percent) if percent is not None else "배터리 N/A"
+        # OLED text must stay ASCII-only - see draw_ascii_text's comment for
+        # why (a Korean label here previously crashed this whole node,
+        # motors included).
+        battery_text = "Battery {0:.0f}%".format(percent) if percent is not None else "Battery N/A"
         text = "ip={0}, motion={1}, battery={2}".format(ip_address, self.last_motion, battery_text)
         self.status_pub.publish(String(data=text))
         self.oled.show("CCAI JetBot", ip_address, battery_text)
