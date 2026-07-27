@@ -73,6 +73,11 @@ patrol_node:
     # short since a long blind reverse with no rear sensor is itself a
     # collision risk.
     explore_room_scan_escape_backup_seconds: 0.4
+    # "문이 앞에 있는데 방을 나가지 못하고 계속 돌고 있어" (2026-07-27) - a
+    # DOOR candidate deserves more persistence than plain floor before being
+    # abandoned - see patrol_node.py's room_scan_abort_advance comment.
+    explore_room_scan_max_door_nudges: 2
+    explore_room_scan_door_nudge_step: 0.15
     # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
     # comment. Fed into the VLM obstacle/scan prompts so it judges passability
     # against this robot's real footprint, not a guess.
@@ -123,7 +128,27 @@ jetbot_hardware_node:
     max_linear_speed: 0.05
     max_angular_speed: 0.22
     motor_output_scale: 0.35
-    left_trim: -1.0
+    # "앞으로 갈때 똑바로 가지 못하고 오른쪽으로 휘어져" (2026-07-27) - a
+    # differential-drive robot curves toward whichever wheel is relatively
+    # SLOWER, so drifting right while commanding pure forward (no angular.z)
+    # means the left wheel is effectively spinning faster/stronger than the
+    # right one for the same command - ordinary per-motor mechanical
+    # variance on cheap DC gear motors, not a software bug in on_cmd_vel's
+    # left/right split itself (that formula is symmetric: left=linear-angular,
+    # right=linear+angular, before either trim is applied). left_trim/
+    # right_trim compensate this per side. Nudged left_trim's magnitude down
+    # slightly (an untested starting guess, not a measured calibration - no
+    # way to verify the exact right amount without watching the real robot
+    # drive) - to actually calibrate: command a plain forward move (no
+    # turning) for several seconds, measure the sideways drift, and adjust
+    # the STRONGER side's trim magnitude down proportionally (don't push a
+    # trim's magnitude above 1.0 to compensate the other way - on_cmd_vel
+    # clamps to +/-1.0 right after applying it, so anything above 1.0 only
+    # has an effect below full-speed commands). This same imbalance is
+    # almost certainly also why turning left vs turning right isn't
+    # perfectly symmetric ("좌우 회전이 다른지도 검토") - both rely on the
+    # same two per-wheel trims, so fixing this should improve both.
+    left_trim: -0.93
     right_trim: -1.0
     command_timeout_seconds: 1.0
     status_led_pin: -1

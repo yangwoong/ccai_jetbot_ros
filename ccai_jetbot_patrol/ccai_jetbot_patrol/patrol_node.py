@@ -169,6 +169,24 @@ class PatrolNode(Node):
         # got blocked is already marked "tried" before this ever runs (see
         # room_scan_advance_after_label), so it can't be re-picked either.
         self.declare_parameter("explore_room_scan_escape_backup_seconds", 0.4)
+        # "문이 앞에 있는데 방을 나가지 못하고 계속 돌고 있어... 길을
+        # 찾아야 할때는 아주 조금씩 회전하면 나갈길을 찾아" - confirmed on
+        # real hardware: the one real DOOR the room-scan sweep found got
+        # physically blocked partway through (a persistent close reading -
+        # likely just grazing a shelf/door frame in a narrow opening) and
+        # was abandoned outright after the fixed obstacle-override budget
+        # ran out, turning the robot away from its only real exit and back
+        # into looping around already-explored floor in the same room. A
+        # door is the priority target (see RoomGraph.untried_movable) and
+        # deserves more persistence than plain open floor. Before giving up
+        # on a DOOR candidate specifically, back up and nudge the heading by
+        # a small fixed amount (not a full rescan - that's what caused the
+        # earlier wraparound bug) and try again with a fresh obstacle-
+        # override budget, up to this many nudges; only after that does it
+        # fall back to backing up, turning around, and trying a different
+        # direction. Plain FLOOR candidates skip straight to that fallback.
+        self.declare_parameter("explore_room_scan_max_door_nudges", 2)
+        self.declare_parameter("explore_room_scan_door_nudge_step", 0.15)
         # Actual robot footprint - fed into the VLM prompts below (obstacle
         # re-check, per-heading scan) so it judges "can this specific robot
         # fit" against a real size instead of guessing. This robot is much
@@ -268,6 +286,8 @@ class PatrolNode(Node):
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
         self.room_scan_obstacle_override_count = 0
+        self.room_scan_door_nudge_count = 0
+        self.room_scan_door_nudge_pending = False
         self._room_scan_last_logged_phase = "<never>"
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -624,6 +644,8 @@ class PatrolNode(Node):
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
+        self.room_scan_door_nudge_count = 0
+        self.room_scan_door_nudge_pending = False
         degrees = 360 // self.room_scan_total_steps
         self.publish_event(
             f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향의 특징을 확인, "
@@ -967,6 +989,7 @@ class PatrolNode(Node):
         self.room_scan_pending_doorway_step = doorway["step"]
         self.room_scan_obstacle_override_count = 0
         self.room_scan_door_chase_count = 0
+        self.room_scan_door_nudge_count = 0
         delta = (doorway["step"] - self.room_scan_heading_step) % self.room_scan_total_steps
         self.publish_event(f"'{doorway['description']}' 방향(천장 힌트: {self.room_scan_ceiling_direction_hint or '없음'})으로 이동합니다")
         self.room_scan_begin_rotate(delta, "advance_doorway")
@@ -1097,6 +1120,7 @@ class PatrolNode(Node):
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
+        self.room_scan_door_nudge_count = 0
         self.publish_event("새 지점 도착 - 특징 탐색 계속")
         # Settle before the very first VLM request here too, same as every
         # other rotation-then-ask transition (room_scan_complete_rotation) -
@@ -1115,12 +1139,43 @@ class PatrolNode(Node):
         # direction that was just confirmed blocked - and since the robot
         # had since backed away a little, the sensor sometimes read that
         # same spot as briefly clear again, driving it straight back into
-        # the same obstacle forever. Simpler and more robust: back away a
-        # short distance, turn around to roughly face back the way it came,
-        # then pick a genuinely different, already-known candidate
-        # direction (room_scan_advance_after_label) - never re-examine the
-        # heading that just failed (it's already marked "tried" - see
+        # the same obstacle forever. Default: back away a short distance,
+        # turn around to roughly face back the way it came, then pick a
+        # genuinely different, already-known candidate direction
+        # (room_scan_advance_after_label) - never re-examine the heading
+        # that just failed (it's already marked "tried" - see
         # room_scan_advance_after_label - so it can't be re-picked either).
+        #
+        # "문이 앞에 있는데 방을 나가지 못하고 계속 돌고 있어" - confirmed
+        # on real hardware that the one real DOOR found got physically
+        # blocked partway through (likely just grazing a shelf/frame in a
+        # narrow opening) and was abandoned outright once the obstacle-
+        # override budget ran out, turning the robot away from its only
+        # real exit and back into looping the same explored floor. A door
+        # is the priority target and deserves more persistence: before
+        # giving up on a DOOR candidate specifically, back up and nudge the
+        # heading by a small fixed amount ("아주 조금씩 회전") - NOT a full
+        # rescan, that's what caused the wraparound bug above - and retry
+        # with a fresh obstacle-override budget, up to
+        # explore_room_scan_max_door_nudges times, before falling back to
+        # the turn-around-and-try-something-else behavior. Plain FLOOR
+        # candidates skip straight to that fallback.
+        category = self.room_scan_observation_category(
+            self.room_scan_current_room_id, self.room_scan_pending_doorway_step
+        )
+        max_nudges = int(self.get_parameter("explore_room_scan_max_door_nudges").value)
+        if category == "door" and self.room_scan_door_nudge_count < max_nudges:
+            self.room_scan_door_nudge_count += 1
+            self.room_scan_obstacle_override_count = 0
+            self.room_scan_door_nudge_pending = True
+            self.publish_event(
+                f"출입구 방향 장애물 - 뒤로 살짝 물러난 뒤 각도를 조금 틀어 다시 접근합니다 "
+                f"({self.room_scan_door_nudge_count}/{max_nudges})"
+            )
+            self.room_phase = "escape_backup"
+            self.room_scan_phase_started_at = time.monotonic()
+            return
+        self.room_scan_door_nudge_count = 0
         self.room_scan_heading_step = self.room_scan_pending_doorway_step
         self.publish_event("이동 중 장애물 감지 - 뒤로 살짝 물러난 뒤 돌아서 다른 방향을 찾습니다")
         self.room_phase = "escape_backup"
@@ -1317,6 +1372,14 @@ class PatrolNode(Node):
                 self.cmd_vel_pub.publish(twist)
                 return
             self.stop_motion()
+            if self.room_scan_door_nudge_pending:
+                # "아주 조금씩 회전하면 나갈길을 찾아" - small fixed nudge,
+                # then straight back to advance_doorway facing (roughly)
+                # the same door, not a turn-around or a rescan.
+                self.room_scan_door_nudge_pending = False
+                step = float(self.get_parameter("explore_room_scan_door_nudge_step").value)
+                self.room_scan_begin_rotate(step, "advance_doorway")
+                return
             # "회전해서 온길을 돌아가도록" - turn all the way around (half
             # the sweep) instead of re-scanning nearby headings, then pick a
             # different already-known candidate direction.
