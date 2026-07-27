@@ -267,6 +267,17 @@ class PatrolNode(Node):
         self.vlm_explore_trigger_pub = self.create_publisher(String, "/ccai/vlm_explore_trigger", 10)
         self.create_subscription(String, "/ccai/vlm_explore_observation", self.on_vlm_explore_observation, 10)
         self.location_feature_request_pub = self.create_publisher(String, "/ccai/location_feature_request", 10)
+        # llm_control_node subscribes to the same /ccai/admin_text topic we
+        # do (independent process, no shared memory) - confirmed on real
+        # hardware that while we're waiting for a label reply here, it had
+        # no way to know that, so it ALSO forwarded the exact same reply
+        # text (e.g. "작은방") to the LLM as a general command, which
+        # guessed "inspect" and yanked the robot out of EXPLORING mid-sweep
+        # (state switched to INSPECTING, room-scan ticking stopped - looked
+        # like exploration "just stopped" after one label). Broadcast this
+        # flag so it can skip LLM routing entirely while a label answer is
+        # expected - see on_admin_text/on_room_scan_label.
+        self.awaiting_label_state_pub = self.create_publisher(Bool, "/ccai/awaiting_label", 10)
         self.create_subscription(String, "/ccai/mission_command", self.on_mission_command, 10)
         self.create_subscription(String, "/ccai/vlm_observation", self.on_vlm_observation, 10)
         self.create_subscription(String, "/ccai/vision_status", self.on_vision_status, 10)
@@ -336,6 +347,7 @@ class PatrolNode(Node):
             self.room_scan_awaiting_ceiling = False
             self.room_scan_awaiting_room_check = False
             self.room_scan_escape_active = False
+            self.publish_awaiting_label_state()
             self.publish_event("autonomous exploration stopped")
         elif command.type == "location_list":
             names = self.location_store.names()
@@ -557,6 +569,7 @@ class PatrolNode(Node):
         self.set_state(PatrolState.EXPLORING)
         self.current_target = ""
         self.awaiting_label = False
+        self.publish_awaiting_label_state()
         self.explore_last_label_request_at = time.monotonic()
         self.visited_cells = {}
         self.explore_sub_goal = None
@@ -575,6 +588,7 @@ class PatrolNode(Node):
         self.room_scan_heading_step = 0
         self.room_scan_steps_done_this_sweep = 0
         self.room_scan_awaiting_label = False
+        self.publish_awaiting_label_state()
         self.room_scan_awaiting_ceiling = False
         self.room_scan_awaiting_room_check = False
         self.room_scan_ceiling_direction_hint = None
@@ -604,11 +618,13 @@ class PatrolNode(Node):
             if now - self.explore_last_label_request_at > timeout:
                 self.publish_event("라벨 응답이 없어 이 지점은 건너뛰고 탐색을 계속합니다")
                 self.awaiting_label = False
+                self.publish_awaiting_label_state()
                 self.explore_last_label_request_at = now
             return
         interval = float(self.get_parameter("explore_label_interval_seconds").value)
         if now - self.explore_last_label_request_at > interval:
             self.awaiting_label = True
+            self.publish_awaiting_label_state()
             self.explore_last_label_request_at = now
             self.stop_motion()
             self.explore_pause_pub.publish(Bool(data=True))
@@ -673,6 +689,7 @@ class PatrolNode(Node):
                     "이 좌표로 나중에 실제 이동 가능"
                 )
         self.awaiting_label = False
+        self.publish_awaiting_label_state()
         self.explore_last_label_request_at = time.monotonic()
         self.explore_pause_pub.publish(Bool(data=False))
 
@@ -856,6 +873,7 @@ class PatrolNode(Node):
 
     def room_scan_begin_await_label(self) -> None:
         self.room_scan_awaiting_label = True
+        self.publish_awaiting_label_state()
         self.room_phase = "await_label"
         self.stop_motion()
         self.publish_event("이 방의 이름을 답장으로 알려주세요 (건너뛰려면 '스킵')")
@@ -874,6 +892,7 @@ class PatrolNode(Node):
                 self.location_store.set_pose(label, self.odom_x, self.odom_y, self.odom_yaw)
             self.publish_event(f"방 라벨 저장: {label}")
         self.room_scan_awaiting_label = False
+        self.publish_awaiting_label_state()
         self.room_scan_advance_after_label()
 
     def parse_ceiling_direction_hint(self, text: str):
@@ -1648,6 +1667,10 @@ class PatrolNode(Node):
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))
         self.get_logger().info(text)
+
+    def publish_awaiting_label_state(self) -> None:
+        awaiting = bool(self.awaiting_label or self.room_scan_awaiting_label)
+        self.awaiting_label_state_pub.publish(Bool(data=awaiting))
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:

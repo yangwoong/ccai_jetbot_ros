@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import requests
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from ccai_jetbot_patrol.mission import command_to_json, is_direct_robot_command, parse_mission_command
 
@@ -58,6 +58,15 @@ class LlmControlNode(Node):
         self.llm_response_pub = self.create_publisher(String, "/ccai/llm_response", 10)
         self.llm_status_pub = self.create_publisher(String, "/ccai/llm_status", 10)
         self.create_subscription(String, "/ccai/admin_text", self.on_admin_text, 10)
+        # patrol_node runs in a separate process and expects the very next
+        # admin_text message to be a free-text room/location label while
+        # this is true - confirmed on real hardware that without this, we
+        # had no way to know that and independently forwarded the same
+        # label reply (e.g. "작은방") to the LLM as a general command, which
+        # guessed "inspect" and pulled the robot out of autonomous
+        # exploration right after it had just picked a direction to move.
+        self.robot_awaiting_label = False
+        self.create_subscription(Bool, "/ccai/awaiting_label", self.on_awaiting_label, 10)
 
         self.last_status = {
             "connected": False,
@@ -70,9 +79,17 @@ class LlmControlNode(Node):
         self.check_llm()
         self.get_logger().info("llm_control_node ready")
 
+    def on_awaiting_label(self, msg: Bool) -> None:
+        self.robot_awaiting_label = bool(msg.data)
+
     def on_admin_text(self, msg: String) -> None:
         text = msg.data.strip()
         if not text:
+            return
+        if self.robot_awaiting_label:
+            # patrol_node itself already consumes this exact message as the
+            # label/location-name reply - don't also interpret it as a
+            # command here.
             return
         lowered = text.lower()
         if lowered in {"llm status", "llm 연결상태", "llm 상태", "ai 상태", "ai 연결상태"}:
