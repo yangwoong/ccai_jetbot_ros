@@ -94,8 +94,33 @@ class PatrolNode(Node):
         # explore_frontier_mode in drive_loop) - see tick_room_scan().
         self.declare_parameter("explore_room_scan_mode", False)
         # Number of stops in one full rotation (360 / this = degrees per
-        # step, e.g. 8 -> 45 degrees). Timed, not yaw-fed - see angular_speed.
+        # step, e.g. 8 -> 45 degrees).
         self.declare_parameter("explore_room_scan_headings", 8)
+        # Dedicated, deliberately slow rotation speed for this mode only
+        # (separate from the general angular_speed used for patrolling/manual
+        # driving) - and the actual per-step turn duration is a directly
+        # tunable seconds value, NOT derived from a rad/s formula. There are
+        # no wheel encoders, so "how far did we actually turn" has no ground
+        # truth at all; a formula that assumes the commanded Twist.angular.z
+        # value equals real physical rad/s was confirmed wrong on real
+        # hardware (2026-07-27: robot spun ~2.5 full turns aiming for 45
+        # degrees). Slowing down + calibrating this by hand (time it, adjust
+        # explore_room_scan_turn_seconds until it's actually ~45 degrees) is
+        # the only option without encoders. Re-tune both if angular_speed,
+        # motor_output_scale, floor surface, or battery level changes.
+        self.declare_parameter("explore_room_scan_angular_speed", 0.09)
+        self.declare_parameter("explore_room_scan_turn_seconds", 1.0)
+        # Also dedicated/slower than the general linear_speed, for the same
+        # no-encoders reason plus extra stopping margin - see
+        # obstacle_stop_distance_m's comment in depth_nav_node's config.
+        self.declare_parameter("explore_room_scan_linear_speed", 0.03)
+        # Motion blur breaks the VLM's ability to read the scene - confirmed
+        # on real hardware. This node stops moving, then waits this long
+        # (letting motor momentum fully settle and flushing any blurry frames
+        # still in the camera pipeline) BEFORE triggering any VLM request -
+        # see room_scan_complete_rotation's "settling" phase. Never trigger a
+        # VLM analysis while still moving or immediately after stopping.
+        self.declare_parameter("explore_room_scan_settle_seconds", 1.0)
         self.declare_parameter("explore_room_scan_vlm_timeout_seconds", 15.0)
         # How long to drive straight through a doorway / back out of one -
         # timed dead-reckoning, not distance-fed, for the same reason as the
@@ -162,6 +187,7 @@ class PatrolNode(Node):
         self.room_scan_awaiting_label = False
         self.room_scan_awaiting_ceiling = False
         self.room_scan_pending_doorway_step = 0
+        self.room_scan_settle_next = ""
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -604,9 +630,17 @@ class PatrolNode(Node):
         self.room_scan_vlm_text = ""
         self.room_scan_phase_started_at = time.monotonic()
         self.room_phase = "await_vlm_step"
+        # One combined judgment instead of two - covers both "there's a
+        # literal doorway/passage" AND "there's open floor worth exploring
+        # even without a formal doorway" (e.g. a large open room), per the
+        # user's request that the exploration decision should come from the
+        # VLM reading the actual navigable space, not just doors. Either case
+        # is a valid direction to eventually drive toward, so they're treated
+        # the same way downstream (see room_scan_process_vlm_step_result).
         question = (
-            "이 사진에서 문, 출입구, 다른 방/복도로 이어지는 통로가 보이면 'DOOR:YES'로 시작해서 "
-            "이어서 10자 이내로 설명해줘. 안 보이면 'DOOR:NO'로 시작해서 이 장면을 10자 이내로 설명해줘."
+            "이 사진은 로봇 정면입니다. 로봇이 이 방향으로 이동할 수 있는 열린 공간, 문, 통로가 "
+            "보이면 'GO:YES'로 시작해서 이어서 10자 이내로 무엇이 보이는지 적어줘 (예: 문, 복도, "
+            "넓은 바닥). 벽이나 가구로 막혀서 못 가면 'GO:NO'로 시작해서 10자 이내로 설명해줘."
         )
         self.vlm_explore_trigger_pub.publish(String(data=json.dumps({"question": question}, ensure_ascii=False)))
 
@@ -622,16 +656,16 @@ class PatrolNode(Node):
     def room_scan_process_vlm_step_result(self) -> None:
         text = (self.room_scan_vlm_text or "").strip()
         upper = text.upper()
-        has_door = upper.startswith("DOOR:YES") or (
-            "DOOR:NO" not in upper and any(k in text for k in ("출입구", "통로", "문이", "문 "))
+        can_go = upper.startswith("GO:YES") or (
+            "GO:NO" not in upper and any(k in text for k in ("출입구", "통로", "문이", "문 ", "열린", "공간"))
         )
-        if has_door:
+        if can_go:
             description = text.split(":", 1)[1].strip() if ":" in text else text
             if description.upper().startswith("YES:"):
                 description = description[4:].strip()
             self.explore_graph.add_doorway(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30])
             degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
-            self.publish_event(f"{degrees}도 방향 - 출입구 감지: {description[:30]}")
+            self.publish_event(f"{degrees}도 방향 - 이동 가능: {description[:30]}")
         if self.room_scan_heading_step < self.room_scan_total_steps - 1:
             self.room_scan_begin_rotate(1, "await_vlm_step")
         else:
@@ -699,10 +733,14 @@ class PatrolNode(Node):
 
     def room_scan_complete_rotation(self) -> None:
         next_phase = self.room_scan_next_phase
-        if next_phase == "await_vlm_step":
-            self.room_scan_request_vlm_step()
-        elif next_phase == "await_ceiling":
-            self.room_scan_request_ceiling_analysis()
+        if next_phase in ("await_vlm_step", "await_ceiling"):
+            # Never trigger a VLM request straight off a rotation - the
+            # camera pipeline can still be delivering blurry frames from
+            # while the robot was moving. Settle first (see
+            # explore_room_scan_settle_seconds) and only then actually ask.
+            self.room_scan_settle_next = "vlm_step" if next_phase == "await_vlm_step" else "ceiling"
+            self.room_phase = "settling"
+            self.room_scan_phase_started_at = time.monotonic()
         elif next_phase == "after_backtrack_correct":
             self.room_scan_after_backtrack_correct()
         elif next_phase in ("advance_doorway", "backtrack_advance"):
@@ -751,9 +789,7 @@ class PatrolNode(Node):
         self.publish_event(f"이전 방에서 다른 출입구({doorway['description']})로 이동합니다")
         self.room_scan_begin_rotate(doorway["step"], "advance_doorway")
 
-    def tick_room_scan(self, linear_speed: float, angular_speed: float) -> None:
-        import math
-
+    def tick_room_scan(self) -> None:
         if self.room_phase is None:
             self.stop_motion()
             return
@@ -767,12 +803,17 @@ class PatrolNode(Node):
                 self.room_scan_rotate_started_at += 0.2
                 self.stop_motion()
                 return
-            per_step = (2.0 * math.pi / self.room_scan_total_steps) / max(angular_speed, 0.01)
-            target = per_step * self.room_scan_rotate_delta
+            # Dedicated slow rotation speed + directly-tunable seconds, not a
+            # rad/s-based formula - see explore_room_scan_turn_seconds' and
+            # explore_room_scan_angular_speed's declare_parameter comments
+            # (no wheel encoders to verify a formula against).
+            turn_seconds = float(self.get_parameter("explore_room_scan_turn_seconds").value)
+            rotate_speed = float(self.get_parameter("explore_room_scan_angular_speed").value)
+            target = turn_seconds * self.room_scan_rotate_delta
             elapsed = time.monotonic() - self.room_scan_rotate_started_at
             if self.room_scan_rotate_delta > 0 and elapsed < target:
                 twist = Twist()
-                twist.angular.z = angular_speed
+                twist.angular.z = rotate_speed
                 self.cmd_vel_pub.publish(twist)
                 return
             self.stop_motion()
@@ -782,11 +823,24 @@ class PatrolNode(Node):
             self.room_scan_complete_rotation()
             return
 
+        if self.room_phase == "settling":
+            # Fully stopped, waiting out explore_room_scan_settle_seconds
+            # before the VLM is asked to look - see room_scan_complete_rotation.
+            self.stop_motion()
+            settle = float(self.get_parameter("explore_room_scan_settle_seconds").value)
+            if time.monotonic() - self.room_scan_phase_started_at < settle:
+                return
+            if self.room_scan_settle_next == "vlm_step":
+                self.room_scan_request_vlm_step()
+            else:
+                self.room_scan_request_ceiling_analysis()
+            return
+
         if self.room_phase == "await_vlm_step":
             timeout = float(self.get_parameter("explore_room_scan_vlm_timeout_seconds").value)
             if not self.room_scan_vlm_ready:
                 if time.monotonic() - self.room_scan_phase_started_at > timeout:
-                    self.room_scan_vlm_text = "DOOR:NO (응답 시간 초과)"
+                    self.room_scan_vlm_text = "GO:NO (응답 시간 초과)"
                     self.room_scan_vlm_ready = True
                 else:
                     self.stop_motion()
@@ -811,10 +865,11 @@ class PatrolNode(Node):
                     self.room_scan_phase_started_at += 0.2
                 return
             duration = float(self.get_parameter("explore_room_scan_advance_seconds").value)
+            advance_speed = float(self.get_parameter("explore_room_scan_linear_speed").value)
             elapsed = time.monotonic() - self.room_scan_phase_started_at
             if elapsed < duration:
                 twist = Twist()
-                twist.linear.x = linear_speed
+                twist.linear.x = advance_speed
                 self.cmd_vel_pub.publish(twist)
                 return
             self.stop_motion()
@@ -950,7 +1005,7 @@ class PatrolNode(Node):
         # tick_room_scan(). Checked before explore_frontier_mode below since
         # they're mutually exclusive alternate EXPLORING drivers.
         if self.state == PatrolState.EXPLORING and use_room_scan_mode:
-            self.tick_room_scan(linear_speed, angular_speed)
+            self.tick_room_scan()
             return
 
         # POSE_GOAL and EXPLORING-with-explore_frontier_mode both drive via

@@ -201,9 +201,24 @@ class DepthNavNode(Node):
         min_valid = float(self.get_parameter("min_valid_depth_m").value)
         max_valid = float(self.get_parameter("max_valid_depth_m").value)
         valid = region[(region >= min_valid) & (region <= max_valid)]
-        if valid.size == 0:
-            return max_valid
-        return float(self.np.median(valid))
+        if valid.size > 0:
+            return float(self.np.median(valid))
+        # Nothing landed in the trustworthy range - this covers two very
+        # different situations that both used to fall through to "wide open"
+        # (max_valid), which let the robot keep driving straight into
+        # whatever it was approaching (confirmed on real hardware: obstacle
+        # correctly detected while still a bit away, then NOT avoided,
+        # collision - because right at the closest point, depth readings go
+        # below the D435i's ~0.2m minimum reliable range and read as
+        # near-zero/no-return, exactly like "nothing here"). Distinguish by
+        # checking for a cluster of positive-but-below-min_valid readings,
+        # which only happens when something is actually there and too close
+        # to measure - a genuine no-return (far wall past max_valid,
+        # featureless surface) has no such cluster.
+        too_close = region[(region > 0.0) & (region < min_valid)]
+        if too_close.size > region.size * 0.1:
+            return 0.0
+        return max_valid
 
     def analyze_depth(self, depth) -> dict:
         height, width = depth.shape[:2]
