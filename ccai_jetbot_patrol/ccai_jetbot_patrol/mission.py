@@ -55,6 +55,19 @@ def parse_mission_command(message: str) -> MissionCommand:
     save_match = SAVE_LOCATION_PATTERN.search(raw)
     if save_match and ("저장" in lowered or "기억" in lowered) and "시작" not in lowered:
         return MissionCommand(type="remember_save", target=save_match.group(1), raw=message)
+    if lowered in {"위치 목록", "저장된 위치", "위치 목록 보여줘", "저장된 위치 목록", "location list", "locations"}:
+        return MissionCommand(type="location_list", raw=message)
+    if "삭제" in lowered and ("지도" in lowered or "탐색 기록" in lowered or "탐색기록" in lowered):
+        return MissionCommand(type="explore_map_reset", raw=message)
+    if "초기화" in lowered and ("지도" in lowered or "탐색" in lowered):
+        return MissionCommand(type="explore_map_reset", raw=message)
+    if "삭제" in lowered and ("위치" in lowered or "라벨" in lowered or "기억" in lowered):
+        # Strip the known keywords/particles to isolate the label name, same
+        # style as the "점검" target-extraction below.
+        target = raw
+        for kw in ("위치", "라벨", "기억", "삭제", "해줘", "해줘요", "해", "를", "을", "에서", "좀"):
+            target = target.replace(kw, "")
+        return MissionCommand(type="location_delete", target=target.strip(), raw=message)
     if lowered in {"forward", "go forward", "move forward", "전진", "전진해", "앞으로", "앞으로 가", "직진", "직진해"}:
         return MissionCommand(type="move_forward", raw=message)
     if lowered in {"backward", "go back", "move backward", "후진", "후진해", "뒤로", "뒤로 가"}:
@@ -175,6 +188,7 @@ def is_direct_robot_command(command: MissionCommand) -> bool:
         "status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person",
         "move_forward", "move_backward", "turn_left", "turn_right", "set_speed", "analyze",
         "remember_start", "remember_save", "explore_start", "explore_stop",
+        "location_list", "location_delete", "explore_map_reset",
     }
 
 

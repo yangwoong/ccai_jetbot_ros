@@ -36,8 +36,11 @@ Allowed command types:
 - remember_save: save the current location under a name, whether or not remember_start was used first (if the user just says "here is X, remember/save it" with no prior recording, that's still remember_save - it will save the current view's visual features even without a travel path). Include target as the location name mentioned by the user (e.g. "정문", "작은방").
 - explore_start: begin autonomous exploration - the robot drives itself around avoiding obstacles, and periodically stops to ask the admin to name/label the current spot so it can build up a set of known locations over time.
 - explore_stop: stop autonomous exploration.
+- location_list: list all saved location names.
+- location_delete: delete one saved location by name. Include target as the location name (e.g. "작은방 위치 삭제해" -> target "작은방").
+- explore_map_reset: wipe the whole room-scan exploration map (all rooms/labels built during autonomous exploration) - only when the user clearly asks to clear/reset the exploration map or start exploration fresh, not for deleting a single location.
 - say: if no robot action is requested. Include text.
-JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|explore_start|explore_stop|say","target":"","text":""}
+JSON schema: {"type":"status|patrol_start|patrol_stop|go_home|inspect|follow_person|move_forward|move_backward|turn_left|turn_right|set_speed|analyze|remember_start|remember_save|explore_start|explore_stop|location_list|location_delete|explore_map_reset|say","target":"","text":""}
 """
 
 

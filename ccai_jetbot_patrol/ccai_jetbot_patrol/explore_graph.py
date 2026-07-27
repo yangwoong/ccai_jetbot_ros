@@ -40,6 +40,14 @@ class RoomGraph:
             encoding="utf-8",
         )
 
+    def reset(self) -> None:
+        """Wipes the whole map - for clearing out rooms accumulated during
+        testing/debugging (e.g. many duplicate labels from a since-fixed
+        bug), not something a normal exploration run needs to call."""
+        self.rooms = {}
+        self.next_room_id = 1
+        self.save()
+
     def start_room(self, parent_room_id: Optional[str], entered_via_step: Optional[int]) -> str:
         room_id = str(self.next_room_id)
         self.next_room_id += 1

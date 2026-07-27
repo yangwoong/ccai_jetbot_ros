@@ -81,3 +81,10 @@ class LocationStore:
 
     def names(self) -> List[str]:
         return list(self.locations.keys())
+
+    def delete(self, label: str) -> bool:
+        if label in self.locations:
+            del self.locations[label]
+            self.save()
+            return True
+        return False

@@ -331,6 +331,13 @@ class PatrolNode(Node):
             self.room_scan_awaiting_ceiling = False
             self.room_scan_awaiting_room_check = False
             self.publish_event("autonomous exploration stopped")
+        elif command.type == "location_list":
+            names = self.location_store.names()
+            self.publish_event("저장된 위치: " + (", ".join(names) if names else "없음"))
+        elif command.type == "location_delete":
+            self.delete_location(command.target)
+        elif command.type == "explore_map_reset":
+            self.reset_explore_map()
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
         else:
@@ -489,6 +496,32 @@ class PatrolNode(Node):
         self.recording = False
         self.record_buffer = []
         self.request_location_feature_capture(label)
+
+    def delete_location(self, label: str) -> None:
+        # Requested after repeated bugs left a pile of duplicate/garbage
+        # labels (e.g. "사무실 중앙" saved many times over) with no way to
+        # clean them up - deletes from LocationStore only (data/locations.json).
+        # Does not touch the room-scan graph (data/room_graph.json) - see
+        # reset_explore_map for wiping that.
+        if not label:
+            self.publish_event("삭제할 위치 이름을 알려주세요 (예: '작은방 위치 삭제해')")
+            return
+        if self.location_store.delete(label):
+            self.publish_event(f"위치 삭제됨: {label}")
+        else:
+            self.publish_event(f"'{label}' 위치를 찾을 수 없습니다 (저장된 위치: {', '.join(self.location_store.names()) or '없음'})")
+
+    def reset_explore_map(self) -> None:
+        # Wipes the room-scan topological map (data/room_graph.json) - useful
+        # after the same repeated-bug situation above filled it with many
+        # duplicate/garbage room entries. Refuses while actively exploring
+        # since self.room_scan_current_room_id would then point at a room
+        # this just deleted out from under it.
+        if self.state == PatrolState.EXPLORING:
+            self.publish_event("자율탐색 중에는 지도를 초기화할 수 없습니다 - 먼저 '정지'하세요")
+            return
+        self.explore_graph.reset()
+        self.publish_event("탐색 지도(방-단위 그래프)를 초기화했습니다")
 
     def request_location_feature_capture(self, label: str) -> None:
         # Capture visual features of the current view, so future arrivals at
