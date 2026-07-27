@@ -188,6 +188,7 @@ class PatrolNode(Node):
         self.room_scan_pending_doorway_step = 0
         self.room_scan_settle_next = ""
         self.room_scan_ceiling_direction_hint = None
+        self._room_scan_last_logged_phase = "<never>"
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/status", 10)
@@ -525,6 +526,16 @@ class PatrolNode(Node):
     def is_obstacle_now(self) -> bool:
         try:
             payload = json.loads(self.last_vision_status)
+            if payload.get("state") == "depth_camera_timeout":
+                # depth_nav_node's own watchdog fires this when D435i frames
+                # stop arriving - it keeps republishing obstacle_now from
+                # whatever signals it last computed before the stream died,
+                # not a fresh reading. Trusting that frozen value here used to
+                # let a dead camera masquerade as a permanent obstacle and
+                # wedge this node's phases in stop_motion() forever (confirmed
+                # on real hardware). Treat "camera is dead" as "can't confirm
+                # an obstacle", not as "there is one".
+                return False
             return bool(payload.get("obstacle_now", False))
         except Exception:
             return False
@@ -642,6 +653,7 @@ class PatrolNode(Node):
             "보이면 'GO:YES'로 시작해서 이어서 10자 이내로 무엇이 보이는지 적어줘 (예: 문, 복도, "
             "넓은 바닥). 벽이나 가구로 막혀서 못 가면 'GO:NO'로 시작해서 10자 이내로 설명해줘."
         )
+        self.get_logger().info(f"[room_scan] vlm_explore_trigger sent (heading_step={self.room_scan_heading_step})")
         self.vlm_explore_trigger_pub.publish(String(data=json.dumps({"question": question}, ensure_ascii=False)))
 
     def on_vlm_explore_observation(self, msg: String) -> None:
@@ -650,6 +662,7 @@ class PatrolNode(Node):
             text = str(payload.get("summary", "")) or str(payload.get("raw", ""))
         except (json.JSONDecodeError, AttributeError):
             text = msg.data
+        self.get_logger().info(f"[room_scan] vlm_explore_observation received: {text[:80]!r}")
         self.room_scan_vlm_text = text
         self.room_scan_vlm_ready = True
 
@@ -845,19 +858,35 @@ class PatrolNode(Node):
         self.room_scan_begin_rotate(doorway["step"], "advance_doorway")
 
     def tick_room_scan(self) -> None:
+        # Terminal-only trace of every phase transition (docker logs /
+        # ros2 log), separate from publish_event() which only fires on the
+        # coarser, admin-facing milestones (label requests, direction
+        # chosen, etc). Added 2026-07-27 so operational state is visible
+        # from a plain `docker logs -f ccai-jetbot` without querying ROS
+        # topics directly.
+        if self.room_phase != self._room_scan_last_logged_phase:
+            self.get_logger().info(
+                f"[room_scan] room={self.room_scan_current_room_id} heading_step={self.room_scan_heading_step} "
+                f"phase={self._room_scan_last_logged_phase!r} -> {self.room_phase!r}"
+            )
+            self._room_scan_last_logged_phase = self.room_phase
+
         if self.room_phase is None:
             self.stop_motion()
             return
 
         if self.room_phase == "rotating":
-            if self.is_obstacle_now():
-                # Shift the window forward by roughly one tick so the paused
-                # time doesn't count toward "how long have we been turning" -
-                # otherwise a brief obstacle pause would make this phase think
-                # it finished turning sooner than the motors actually did.
-                self.room_scan_rotate_started_at += 0.2
-                self.stop_motion()
-                return
+            # No obstacle check here on purpose (removed 2026-07-27): this is
+            # rotation IN PLACE, not driving forward - a forward obstacle
+            # reading is irrelevant to it, and gating on one was a real bug:
+            # confirmed on real hardware that when the D435i's depth stream
+            # drops out, depth_nav_node's obstacle_now freezes at whatever it
+            # last was (is_obstacle_now() has no staleness check), and if
+            # that happened to freeze "true" this phase would hold
+            # stop_motion() forever - the robot never even completing the
+            # first 45-degree turn ("정면이 막혀있어도 45도 회전하며 길을
+            # 찾아야 해", exactly the reported symptom). Only advance_doorway/
+            # backtrack_advance (which actually drive forward) still check it.
             # Dedicated slow rotation speed + directly-tunable seconds, not a
             # rad/s-based formula - see explore_room_scan_turn_seconds' and
             # explore_room_scan_angular_speed's declare_parameter comments
@@ -895,6 +924,10 @@ class PatrolNode(Node):
             timeout = float(self.get_parameter("explore_room_scan_vlm_timeout_seconds").value)
             if not self.room_scan_vlm_ready:
                 if time.monotonic() - self.room_scan_phase_started_at > timeout:
+                    self.get_logger().warning(
+                        f"[room_scan] vlm_explore response timed out after {timeout}s at "
+                        f"heading_step={self.room_scan_heading_step} - treating as GO:NO"
+                    )
                     self.room_scan_vlm_text = "GO:NO (응답 시간 초과)"
                     self.room_scan_vlm_ready = True
                 else:
