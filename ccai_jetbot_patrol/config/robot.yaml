@@ -65,18 +65,14 @@ patrol_node:
     # already judged movable, ask it to confirm from the close-up view
     # whether it's actually blocked or just narrow, this many times.
     explore_room_scan_max_obstacle_overrides: 2
-    # "장애물 발견시 회전, 후진후 회전등 로봇 크기를 고려하여 이동" - back
-    # away this long before starting the escape rotation scan, so turning
-    # in place doesn't graze whatever the robot just stopped against.
-    # "뒤에는 센서가 없어. 후진은 조금만" (2026-07-27) - shortened from an
-    # earlier 1.5s since a long blind reverse with no rear sensor is itself
-    # a collision risk.
+    # "막힌곳에서 뒤로 후진한 후 회전해서 온길을 돌아가도록 해" - back away
+    # this long, then turn around and pick a different already-known
+    # direction (see patrol_node.py's room_scan_abort_advance comment for
+    # why the earlier fine-grained rescan-in-place approach was replaced
+    # with this simpler one). "뒤에는 센서가 없어. 후진은 조금만" - kept
+    # short since a long blind reverse with no rear sensor is itself a
+    # collision risk.
     explore_room_scan_escape_backup_seconds: 0.4
-    # "장애물을 잘 못피해" (2026-07-27) - cap consecutive local escape
-    # rounds in the same tight spot before giving up on fine-grained
-    # rescanning and retreating further/trying a different known direction.
-    explore_room_scan_max_escape_rounds: 3
-    explore_room_scan_deep_backup_seconds: 2.0
     # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
     # comment. Fed into the VLM obstacle/scan prompts so it judges passability
     # against this robot's real footprint, not a guess.
@@ -235,9 +231,17 @@ depth_nav_node:
     # confirmed on real hardware that 0.6m constantly rejected genuinely
     # passable furniture gaps in a cluttered office for a robot that's only
     # 0.18m wide/long (see patrol_node.py's robot_width_m/robot_length_m).
-    # Lowered to give roughly the robot's own footprint as clearance beyond
-    # its body, not 3x that. Re-raise if this turns out to clip anything.
-    obstacle_stop_distance_m: 0.3
+    # Lowered to 0.3m (roughly the robot's own footprint as clearance beyond
+    # its body), but that then undershot - "장애물을 여전히 부딪혀... 순찰
+    # 로봇이라 벽에 가까이 가지 않아도 돼. 상태만 확인하면 돼" (2026-07-27):
+    # this is a patrol robot, not one that needs to squeeze through every
+    # tight furniture gap - a bigger safety margin is worth more here than
+    # reaching a few extra centimeters closer. Raised back up partway
+    # (0.45m, the code's own built-in default) - still well short of the
+    # earlier over-cautious 0.6m, and the LLM obstacle-recheck override
+    # (explore_room_scan_max_obstacle_overrides) still lets room-scan push
+    # past this when the VLM confirms a specific gap is genuinely passable.
+    obstacle_stop_distance_m: 0.45
     min_valid_frame_seconds: 1.0
     obstacle_avoidance_hold_seconds: 1.0
     obstacle_clear_confirm_frames: 5
@@ -261,6 +265,9 @@ vlm_client_node:
     min_interval_seconds: 5.0
     request_timeout_seconds: 35.0
     error_event_min_interval_seconds: 30.0
+    # "천장 CSI카메라에... 엣지를 통해 천장 모양을... LLM에 보내서 분석"
+    # (2026-07-27) - see vlm_client_node.py's declare_parameter comment.
+    image_overlay: "edges"
 
 # Second vlm_client_node instance (see launch/patrol.launch.py's
 # CCAI_ENABLE_EXPLORE_LLM node, remapped to name "vlm_explore_node") - watches

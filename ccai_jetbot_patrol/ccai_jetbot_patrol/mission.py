@@ -36,8 +36,25 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="status", raw=message)
     if lowered in {"patrol start", "start patrol", "start", "run", "순찰 시작", "시작", "/start"}:
         return MissionCommand(type="patrol_start", raw=message)
-    if lowered in {"patrol stop", "stop patrol", "stop", "halt", "순찰 중지", "순찰 정지", "정지", "멈춰", "/stop"}:
+    # "탐색과 순찰을 혼동하고 있어" - 탐색(exploring for new navigable area)
+    # and 순찰(patrolling already-known space, checking video for anomalies)
+    # are different missions with different stop handling. A message that
+    # explicitly names one ("순찰 중지"/"탐색 중지") must stop THAT one
+    # specifically - checked first, before the bare/ambiguous stop words
+    # below, which used to hard-code every plain "정지"/"멈춰" to
+    # patrol_stop even while actively exploring (confirmed on real
+    # hardware: exploring never actually got the explore-specific cleanup
+    # it needed - room_phase, awaiting_label state, etc - because that
+    # code path was never reached).
+    if lowered in {"patrol stop", "stop patrol", "순찰 중지", "순찰 정지"}:
         return MissionCommand(type="patrol_stop", raw=message)
+    if lowered in {"explore stop", "탐색 중지", "자율탐색 중지", "탐험 중지"}:
+        return MissionCommand(type="explore_stop", raw=message)
+    # Bare/ambiguous stop word with no 순찰/탐색 qualifier - let patrol_node
+    # resolve it against whichever mission is actually running right now
+    # (see MissionCommand type "stop" handling in patrol_node.on_mission_command).
+    if lowered in {"stop", "halt", "정지", "멈춰", "/stop"}:
+        return MissionCommand(type="stop", raw=message)
     if lowered in {"go home", "return home", "home", "복귀", "기지로", "충전소로"}:
         return MissionCommand(type="go_home", raw=message)
     if lowered in {"follow person", "person follow", "follow me", "사람 따라가", "따라와", "나를 따라와"}:
@@ -46,8 +63,6 @@ def parse_mission_command(message: str) -> MissionCommand:
         return MissionCommand(type="remember_start", raw=message)
     if lowered in {"explore", "explore start", "자율탐색", "자율 탐색", "탐색 시작", "자율탐색 시작", "탐험 시작"}:
         return MissionCommand(type="explore_start", raw=message)
-    if lowered in {"explore stop", "탐색 중지", "자율탐색 중지", "탐험 중지"}:
-        return MissionCommand(type="explore_stop", raw=message)
     if ("천천히" in lowered) and ("앞으로" in lowered or "전진" in lowered):
         return MissionCommand(type="move_forward", target="slow", raw=message)
     if ("천천히" in lowered) and ("뒤로" in lowered or "후진" in lowered):
@@ -185,7 +200,7 @@ def normalize_command_type(command_type: str) -> str:
 
 def is_direct_robot_command(command: MissionCommand) -> bool:
     return command.type in {
-        "status", "patrol_start", "patrol_stop", "go_home", "inspect", "follow_person",
+        "status", "patrol_start", "patrol_stop", "stop", "go_home", "inspect", "follow_person",
         "move_forward", "move_backward", "turn_left", "turn_right", "set_speed", "analyze",
         "remember_start", "remember_save", "explore_start", "explore_stop",
         "location_list", "location_delete", "explore_map_reset",

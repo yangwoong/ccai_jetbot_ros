@@ -230,24 +230,40 @@ class DepthNavNode(Node):
         # which only happens when something is actually there and too close
         # to measure - a genuine no-return (far wall past max_valid,
         # featureless surface) has no such cluster.
+        # "바닥 장애물 인식을 너무 못해" (2026-07-27) - lowered from 0.1: a
+        # thin/low obstacle (cable, book, shoe) only fills a small fraction
+        # of the region with too-close pixels, and the old 10% threshold let
+        # those get missed and fall through to "wide open".
         too_close = region[(region > 0.0) & (region < min_valid)]
-        if too_close.size > region.size * 0.1:
+        if too_close.size > region.size * 0.04:
             return 0.0
         return max_valid
 
     def analyze_depth(self, depth) -> dict:
         height, width = depth.shape[:2]
-        band = depth[int(height * 0.35): int(height * 0.75), :]
+        # "바닥 장애물 인식을 너무 못해. 주행뷰에서 장애물 인식률을 올려"
+        # (2026-07-27): band widened from 0.75 to 0.85 of frame height to
+        # catch low floor obstacles closer to the robot that the previous,
+        # more conservative cutoff missed entirely. This is a patrol robot
+        # that doesn't need to hug walls or squeeze through tight gaps (see
+        # obstacle_stop_distance_m's comment) - occasionally stopping a
+        # little early for perspective-close-looking floor is an acceptable
+        # trade for catching more real obstacles.
+        band = depth[int(height * 0.35): int(height * 0.85), :]
         third = width // 3
         left_distance = self.region_distance(band[:, :third])
         center_distance = self.region_distance(band[:, third: 2 * third])
         right_distance = self.region_distance(band[:, 2 * third:])
         stop_distance = float(self.get_parameter("obstacle_stop_distance_m").value)
+        # Any of the three columns (not just center) triggers a stop - a
+        # narrow robot can still clip something off-center, and again, this
+        # patrol robot doesn't need to shave margin for extra maneuverability.
+        obstacle_now = min(left_distance, center_distance, right_distance) < stop_distance
         return {
             "left_distance": left_distance,
             "center_distance": center_distance,
             "right_distance": right_distance,
-            "obstacle_now": center_distance < stop_distance,
+            "obstacle_now": obstacle_now,
         }
 
     def describe_signals(self, signals: dict, suffix: str = "") -> str:
@@ -358,19 +374,19 @@ class DepthNavNode(Node):
         stop_distance = float(self.get_parameter("obstacle_stop_distance_m").value)
 
         # Same band as analyze_depth() uses for the actual driving decision
-        # (0.35-0.75 of the frame height) - NOT just "top cropped, bottom
-        # included". Confirmed on real hardware: including the very bottom
-        # of the frame (floor right in front of/under the robot) painted it
-        # red even when clearly drivable, because that floor is always the
-        # closest point in the whole depth image by simple camera geometry
-        # (steepest viewing angle = shortest range), regardless of whether
-        # anything is actually blocking it - it's not an obstacle, it's
-        # perspective. Excluding it (and matching analyze_depth's own band)
-        # keeps this overlay honest about what "close" actually means here,
-        # and keeps it visually consistent with the band that's actually
-        # driving the robot.
+        # (0.35-0.85 of the frame height, widened from 0.75 on 2026-07-27 to
+        # improve floor-obstacle recall - see analyze_depth's comment) - NOT
+        # just "top cropped, bottom included". Including the very bottom of
+        # the frame (floor right under the robot) still paints it red even
+        # when clearly drivable, because that floor is always the closest
+        # point in the whole depth image by simple camera geometry (steepest
+        # viewing angle = shortest range), regardless of whether anything is
+        # actually blocking it - it's not an obstacle, it's perspective.
+        # Excluding just that very bottom sliver (and matching analyze_depth's
+        # own band otherwise) keeps this overlay honest, and keeps it
+        # visually consistent with the band that's actually driving the robot.
         roi_top = int(height * 0.35)
-        roi_bottom = int(height * 0.75)
+        roi_bottom = int(height * 0.85)
         valid = (depth >= min_valid) & (depth <= max_valid)
         valid[:roi_top, :] = False
         valid[roi_bottom:, :] = False

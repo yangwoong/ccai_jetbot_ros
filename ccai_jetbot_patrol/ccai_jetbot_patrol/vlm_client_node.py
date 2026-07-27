@@ -34,6 +34,19 @@ class VlmClientNode(Node):
         self.declare_parameter("min_interval_seconds", 5.0)
         self.declare_parameter("request_timeout_seconds", 20.0)
         self.declare_parameter("error_event_min_interval_seconds", 30.0)
+        # "천장 CSI카메라에 천장 구조를 검출하도록... 엣지를 통해 천장 모양을
+        # ... LLM에 보내서 분석" - "none" sends the raw camera frame
+        # (unchanged default, used for the D435i room-scan instance and
+        # general risk monitoring); "edges" draws a Canny edge overlay
+        # highlighting structural boundaries (wall/ceiling seams, light
+        # fixture outlines, doorway lintels) before sending, for the
+        # CSI-facing instance's ceiling/room-shape questions. YOLO itself
+        # isn't used here - its COCO object classes (person, chair, etc.)
+        # have nothing resembling "ceiling structure" to detect, and it's
+        # separately broken on this hardware anyway (see vision_nav_node's
+        # TensorRT/ONNX fallback issues) - edge detection is the actual
+        # applicable technique for "천장 모양" and doesn't depend on it.
+        self.declare_parameter("image_overlay", "none")
 
         image_topic = str(self.get_parameter("image_topic").value)
         trigger_topic = str(self.get_parameter("trigger_topic").value)
@@ -48,6 +61,17 @@ class VlmClientNode(Node):
         self.pending_question = ""
         self.latest_frame = None
         self.last_error_event_at = 0.0
+        self.cv2 = None
+        self.np = None
+        if str(self.get_parameter("image_overlay").value) == "edges":
+            try:
+                import cv2
+                import numpy as np
+
+                self.cv2 = cv2
+                self.np = np
+            except Exception as exc:
+                self.get_logger().warning(f"image_overlay=edges requested but cv2 unavailable ({exc}); sending raw frames")
         self.get_logger().info(f"vlm_client_node ready, image_topic={image_topic}, trigger_topic={trigger_topic}")
 
     def on_trigger(self, msg: String) -> None:
@@ -73,9 +97,41 @@ class VlmClientNode(Node):
         question = self.pending_question
         self.pending_question = ""
         image_bytes = bytes(msg.data)
+        image_format = msg.format
+        if self.cv2 is not None:
+            overlaid = self.apply_edge_overlay(image_bytes)
+            if overlaid is not None:
+                image_bytes, image_format = overlaid
         threading.Thread(
-            target=self.analyze_image, args=(image_bytes, msg.format, question, was_triggered), daemon=True
+            target=self.analyze_image, args=(image_bytes, image_format, question, was_triggered), daemon=True
         ).start()
+
+    def apply_edge_overlay(self, image_bytes: bytes):
+        """Draw a Canny edge overlay highlighting structural boundaries
+        (wall/ceiling seams, light fixture outlines, doorway lintels) so the
+        VLM gets the same kind of visual aid for "천장 모양" that
+        depth_nav_node's drivable-floor overlay gives it for the drive view.
+        Returns (jpeg_bytes, "jpeg") or None to fall back to the raw frame
+        (e.g. on a decode failure)."""
+        try:
+            array = self.np.frombuffer(image_bytes, dtype=self.np.uint8)
+            frame = self.cv2.imdecode(array, self.cv2.IMREAD_COLOR)
+            if frame is None:
+                return None
+            gray = self.cv2.cvtColor(frame, self.cv2.COLOR_BGR2GRAY)
+            gray = self.cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = self.cv2.Canny(gray, 50, 150)
+            edges = self.cv2.dilate(edges, self.np.ones((2, 2), self.np.uint8), iterations=1)
+            overlay = frame.copy()
+            overlay[edges > 0] = (0, 255, 255)  # bright cyan-yellow, stands out against a ceiling
+            blended = self.cv2.addWeighted(overlay, 0.6, frame, 0.4, 0)
+            ok, encoded = self.cv2.imencode(".jpg", blended)
+            if not ok:
+                return None
+            return bytes(encoded.tobytes()), "jpeg"
+        except Exception as exc:
+            self.get_logger().debug(f"edge overlay failed, using raw frame: {exc}")
+            return None
 
     def analyze_image(self, image_bytes: bytes, image_format: str, question: str = "", was_triggered: bool = False) -> None:
         try:
