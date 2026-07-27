@@ -321,13 +321,18 @@ class DepthNavNode(Node):
         return twist, detail
 
     def build_drivable_overlay(self, depth, shape) -> object:
-        """Per-pixel drivable-floor overlay instead of three rigid boxes: every
-        pixel in the analysis region is classified straight from its own
-        depth reading (green=clearly open, yellow=caution, red=too close),
-        so the colored region actually follows the shape of the real floor
-        and whatever is sticking into it - like a dashcam lane-overlay, not a
-        fixed grid. Returns an RGB image of `shape` with 0 alpha (black)
-        outside the analysis region, to be alpha-blended by the caller.
+        """Drivable-floor overlay: raw per-pixel depth classification produced
+        scattered, noisy patches (confirmed on real hardware - a speckled mix
+        of tiny red/yellow/green fragments, not a clean readable shape). This
+        cleans that up into a single smooth green blob for "where it's safe
+        to drive" - open-floor pixels are morphologically closed/opened
+        (fills small gaps, drops speckle noise) and only the single largest
+        connected region is kept and filled, discarding smaller disconnected
+        fragments. Close-range pixels are drawn as solid red on top (no
+        separate "caution" yellow tier - it added visual noise without being
+        used by any driving logic, this overlay is purely for the human
+        watching the web UI). Returns an RGB image of `shape` with 0 alpha
+        (black) outside the analysis region, to be alpha-blended by the caller.
         """
         height, width = shape[:2]
         if depth.shape[:2] != (height, width):
@@ -344,14 +349,27 @@ class DepthNavNode(Node):
         valid = (depth >= min_valid) & (depth <= max_valid)
         valid[:roi_top, :] = False
         red_mask = valid & (depth <= stop_distance)
-        yellow_mask = valid & (depth > stop_distance) & (depth <= stop_distance * 1.6)
-        green_mask = valid & (depth > stop_distance * 1.6)
+        open_floor = valid & (depth > stop_distance)
+
+        green_mask = self.np.zeros((height, width), dtype=bool)
+        open_u8 = (open_floor.astype(self.np.uint8)) * 255
+        kernel = self.np.ones((15, 15), self.np.uint8)
+        cleaned = self.cv2.morphologyEx(open_u8, self.cv2.MORPH_OPEN, kernel)
+        cleaned = self.cv2.morphologyEx(cleaned, self.cv2.MORPH_CLOSE, kernel)
+        contours, _ = self.cv2.findContours(cleaned, self.cv2.RETR_EXTERNAL, self.cv2.CHAIN_APPROX_SIMPLE)
+        if contours:
+            largest = max(contours, key=self.cv2.contourArea)
+            # Ignore tiny noise contours (< 1% of the frame) - only draw a
+            # blob big enough to actually mean "there's a way through here".
+            if self.cv2.contourArea(largest) > height * width * 0.01:
+                mask_u8 = self.np.zeros((height, width), dtype=self.np.uint8)
+                self.cv2.drawContours(mask_u8, [largest], -1, 255, thickness=self.cv2.FILLED)
+                green_mask = mask_u8 > 0
 
         overlay = self.np.zeros((height, width, 3), dtype=self.np.uint8)
         overlay[green_mask] = (0, 200, 0)
-        overlay[yellow_mask] = (0, 200, 255)
         overlay[red_mask] = (0, 0, 255)
-        mask = green_mask | yellow_mask | red_mask
+        mask = green_mask | red_mask
         return overlay, mask
 
     def publish_debug_frame(self, frame) -> None:

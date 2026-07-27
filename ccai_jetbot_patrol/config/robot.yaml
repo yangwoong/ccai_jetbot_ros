@@ -39,12 +39,16 @@ patrol_node:
     # at launch (a second vlm_client_node instance watching the D435i) and
     # CCAI_ENABLE_DEPTH_NAV=1 (for that D435i color feed + obstacle safety checks).
     explore_room_scan_mode: true
-    explore_room_scan_headings: 8
-    # Uncalibrated placeholders (2026-07-27) - no wheel encoders, so these
-    # MUST be hand-tuned on the actual robot: time one rotation step with a
-    # stopwatch/protractor and adjust explore_room_scan_turn_seconds until it
-    # actually lands on ~45 degrees, then re-check after any change to
-    # motor_output_scale, floor surface, or battery charge level.
+    # Measured on real hardware (2026-07-27): explore_room_scan_angular_speed
+    # 0.09 + explore_room_scan_turn_seconds 1.0 actually turns ~90 degrees per
+    # step, not the originally intended 45 - rather than keep chasing an
+    # exact 45-degree calibration (no wheel encoders, so this is trial and
+    # error each time), accepted 90 degrees as this rig's real per-step
+    # rotation and switched to 4 steps/sweep (360/90=4) to match, per user
+    # instruction to keep the rotation as-is and fix the math around it
+    # instead. If you re-tune the speed/duration below, re-derive this from
+    # whatever the new real per-step angle turns out to be (360 / that angle).
+    explore_room_scan_headings: 4
     explore_room_scan_angular_speed: 0.09
     explore_room_scan_turn_seconds: 1.0
     explore_room_scan_linear_speed: 0.03

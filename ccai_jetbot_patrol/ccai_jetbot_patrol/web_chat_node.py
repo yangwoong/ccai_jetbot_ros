@@ -246,13 +246,14 @@ HTML_PAGE = """
     header { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin-bottom: 20px; }
     h1 { font-size: 24px; margin: 0; }
     #state { padding: 6px 10px; border-radius: 6px; background: #17202a; color: white; font-size: 14px; }
-    .cameras { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
-    .cameras figure { margin: 0; flex: 0 1 auto; }
-    /* Sized so all 3 previews fit on one row within main's 960px content
-       width without wrapping (3 * 296px + 2 * 10px gap = 908px) - was
-       320px, which overflowed to 984px and pushed the 3rd preview onto its
-       own line. */
-    .cameras img { width: 296px; max-width: 100%; height: auto; border: 1px solid #d7dee8; border-radius: 8px; background: #111; display: block; }
+    /* nowrap + each figure sized as an equal fraction of the row (not a
+       fixed px width) - guarantees exactly 3 per row regardless of the
+       actual viewport/container width, instead of a fixed px guess that
+       overflowed to a 2nd row (was: width:320px, 3*320+2*12=984px > main's
+       960px content box). */
+    .cameras { display: flex; gap: 10px; flex-wrap: nowrap; margin-bottom: 8px; }
+    .cameras figure { margin: 0; flex: 1 1 0; min-width: 0; }
+    .cameras img { width: 100%; height: auto; border: 1px solid #d7dee8; border-radius: 8px; background: #111; display: block; }
     .cameras figcaption { font-size: 12px; color: #5a6572; margin-top: 4px; }
     #visionDetail { font-size: 12px; color: #5a6572; margin: 0 0 12px; word-break: break-all; }
     #log { height: 36vh; overflow: auto; background: white; border: 1px solid #d7dee8; border-radius: 8px; padding: 16px; }
