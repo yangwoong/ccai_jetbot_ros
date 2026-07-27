@@ -105,11 +105,14 @@ class PatrolNode(Node):
         # value equals real physical rad/s was confirmed wrong on real
         # hardware (2026-07-27: robot spun ~2.5 full turns aiming for 45
         # degrees). Slowing down + calibrating this by hand (time it, adjust
-        # explore_room_scan_turn_seconds until it's actually ~45 degrees) is
+        # explore_room_scan_turn_seconds until it's actually ~90 degrees) is
         # the only option without encoders. Re-tune both if angular_speed,
         # motor_output_scale, floor surface, or battery level changes.
+        # 2026-07-27 recalibration #2: 1.0s at this speed measured ~120
+        # degrees on real hardware (not the ~90 assumed when headings was
+        # dropped to 4) - scaled down to 0.75s (90/120 * 1.0).
         self.declare_parameter("explore_room_scan_angular_speed", 0.09)
-        self.declare_parameter("explore_room_scan_turn_seconds", 1.0)
+        self.declare_parameter("explore_room_scan_turn_seconds", 0.75)
         # Also dedicated/slower than the general linear_speed, for the same
         # no-encoders reason plus extra stopping margin - see
         # obstacle_stop_distance_m's comment in depth_nav_node's config.
@@ -248,6 +251,8 @@ class PatrolNode(Node):
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
         self.room_scan_obstacle_override_count = 0
+        self.room_scan_escape_active = False
+        self.room_scan_escape_attempts = 0
         self._room_scan_last_logged_phase = "<never>"
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -330,6 +335,7 @@ class PatrolNode(Node):
             self.room_scan_awaiting_label = False
             self.room_scan_awaiting_ceiling = False
             self.room_scan_awaiting_room_check = False
+            self.room_scan_escape_active = False
             self.publish_event("autonomous exploration stopped")
         elif command.type == "location_list":
             names = self.location_store.names()
@@ -575,6 +581,8 @@ class PatrolNode(Node):
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
+        self.room_scan_escape_active = False
+        self.room_scan_escape_attempts = 0
         degrees = 360 // self.room_scan_total_steps
         self.publish_event(
             f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향의 특징을 확인, "
@@ -788,6 +796,18 @@ class PatrolNode(Node):
         description = text.split(":", 1)[1].strip() if ":" in text else text
         if description.upper().startswith(("YES:", "NO:")):
             description = description.split(":", 1)[1].strip()
+        if self.room_scan_escape_active:
+            degrees = self.room_scan_heading_step * (360.0 / self.room_scan_total_steps)
+            if can_go:
+                self.publish_event(f"{degrees:.0f}도 방향에서 빠져나갈 길을 찾음: {description[:30]}")
+                self.room_scan_escape_active = False
+                self.room_scan_pending_doorway_step = self.room_scan_heading_step
+                self.room_scan_obstacle_override_count = 0
+                self.room_scan_door_chase_count = 0
+                self.room_scan_begin_rotate(0, "advance_doorway")
+            else:
+                self.room_scan_begin_escape_step()
+            return
         # Every heading's feature is remembered (per user request: the VLM
         # judgment - what's visible here - IS the map, not just doorways),
         # and separately flagged movable/not (and door-vs-floor - see
@@ -1039,6 +1059,8 @@ class PatrolNode(Node):
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
         self.room_scan_door_chase_count = 0
+        self.room_scan_escape_active = False
+        self.room_scan_escape_attempts = 0
         self.publish_event("새 지점 도착 - 특징 탐색 계속")
         # Settle before the very first VLM request here too, same as every
         # other rotation-then-ask transition (room_scan_complete_rotation) -
@@ -1049,9 +1071,31 @@ class PatrolNode(Node):
         self.room_scan_phase_started_at = time.monotonic()
 
     def room_scan_abort_advance(self) -> None:
-        self.publish_event("이동 중 장애물 감지 - 이 출입구는 포기하고 다른 방향을 찾습니다")
+        # "막혔다고 판단될때 천천히 회전하며 영상분석을 통해 빠져나올수 있도록
+        # 해" - confirmed on real hardware that falling straight back to the
+        # room's already-known observation list (recorded during the one
+        # coarse 4-heading sweep) left the robot stuck even when a way out
+        # existed at a heading that sweep never sampled (including straight
+        # behind it) - a plain re-pick can only ever choose among headings
+        # that happened to get recorded as movable. Instead, rotate in place
+        # in fine quarter-step increments, checking a fresh VLM view at each
+        # stop, until an actually-open direction is found or a full circle
+        # has been searched.
+        self.publish_event("이동 중 장애물 감지 - 제자리에서 천천히 회전하며 빠져나갈 방향을 다시 찾습니다")
         self.room_scan_heading_step = self.room_scan_pending_doorway_step
-        self.room_scan_advance_after_label()
+        self.room_scan_escape_active = True
+        self.room_scan_escape_attempts = 0
+        self.room_scan_begin_escape_step()
+
+    def room_scan_begin_escape_step(self) -> None:
+        max_attempts = self.room_scan_total_steps * 4  # one full circle at quarter-step granularity
+        if self.room_scan_escape_attempts >= max_attempts:
+            self.publish_event("빠져나갈 방향을 찾지 못함 - 알고 있던 다른 방향으로 다시 시도합니다")
+            self.room_scan_escape_active = False
+            self.room_scan_advance_after_label()
+            return
+        self.room_scan_escape_attempts += 1
+        self.room_scan_begin_rotate(0.25, "await_vlm_step")
 
     def room_scan_begin_obstacle_check(self) -> None:
         max_overrides = int(self.get_parameter("explore_room_scan_max_obstacle_overrides").value)

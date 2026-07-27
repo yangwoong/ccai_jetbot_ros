@@ -48,9 +48,13 @@ patrol_node:
     # instruction to keep the rotation as-is and fix the math around it
     # instead. If you re-tune the speed/duration below, re-derive this from
     # whatever the new real per-step angle turns out to be (360 / that angle).
+    # 2026-07-27 recalibration #2: with turn_seconds 1.0 the robot actually
+    # measured ~120 degrees per step on real hardware, not the ~90 assumed
+    # above - scaled turn_seconds down to 0.75 (90/120 * 1.0) to bring it
+    # back to a real 90-degree step at the same headings=4 sweep.
     explore_room_scan_headings: 4
     explore_room_scan_angular_speed: 0.09
-    explore_room_scan_turn_seconds: 1.0
+    explore_room_scan_turn_seconds: 0.75
     explore_room_scan_linear_speed: 0.03
     explore_room_scan_settle_seconds: 1.0
     explore_room_scan_vlm_timeout_seconds: 15.0
