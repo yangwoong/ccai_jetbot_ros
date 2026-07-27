@@ -1062,9 +1062,29 @@ class PatrolNode(Node):
             # few cycles even though no single sweep can (only 4 samples at
             # a time is possible without re-tuning the rotation timing).
             self.room_scan_root_retry_count += 1
+            offsets = (0.5, 0.25, 0.75)
+            # "탐색할 출입구가 없다고 나가지 못하고 있어" - confirmed on real
+            # hardware that re-sweeping from a rotating offset FOREVER only
+            # changes which bearing gets sampled, never the robot's physical
+            # position - if the room's real exit is hidden from THIS exact
+            # spot (behind furniture, out of the D435i's narrow FOV even
+            # after several rotation offsets), no amount of further rotating
+            # in place will ever reveal it. Once a full local cycle (all 3
+            # offsets) has come up empty, physically reposition instead of
+            # rotating a 4th time in the same spot: nudge toward whichever
+            # of left/center/right currently reads most open and drive
+            # forward a short, safety-checked distance, then resume a fresh
+            # sweep from the new vantage point.
+            if self.room_scan_root_retry_count > len(offsets):
+                self.room_scan_root_retry_count = 0
+                self.publish_event(
+                    "이 자리에서 계속 못 찾음 - 새로운 시야를 위해 조금 이동합니다 - "
+                    "정지 명령 전까지 탐색을 멈추지 않습니다"
+                )
+                self.room_scan_begin_blind_reposition()
+                return
             self.room_scan_is_retry_sweep = True
             self.room_scan_steps_done_this_sweep = 0
-            offsets = (0.5, 0.25, 0.75)
             shift = offsets[(self.room_scan_root_retry_count - 1) % len(offsets)]
             self.publish_event(
                 f"이 위치에서 갈 곳을 못 찾음 - 방향을 바꿔 다시 확인합니다 "
@@ -1076,6 +1096,18 @@ class PatrolNode(Node):
         delta = (half - self.room_scan_heading_step) % self.room_scan_total_steps
         self.publish_event("탐색할 출입구가 더 없어 이전 방으로 돌아갑니다")
         self.room_scan_begin_rotate(delta, "backtrack_advance")
+
+    def room_scan_begin_blind_reposition(self) -> None:
+        # Drive forward a short, safety-checked distance (whatever the robot
+        # currently happens to be facing) to physically get a new vantage
+        # point - see room_scan_begin_backtrack_or_finish's comment. This
+        # rig only ever rotates in one physical direction (no reverse-turn
+        # support - see room_scan_begin_rotate), so there's no way to
+        # deliberately bias toward "whichever side looks more open" without
+        # that capability; the sweep afterward re-verifies every heading
+        # from scratch regardless of which way this happened to face.
+        self.room_phase = "blind_reposition_drive"
+        self.room_scan_phase_started_at = time.monotonic()
 
     def room_scan_begin_rotate(self, delta_steps: int, next_phase: str) -> None:
         self.room_scan_rotate_delta = delta_steps
@@ -1436,6 +1468,27 @@ class PatrolNode(Node):
             # different already-known candidate direction.
             half = self.room_scan_total_steps / 2.0
             self.room_scan_begin_rotate(half, "after_escape_turn_around")
+            return
+
+        if self.room_phase == "blind_reposition_drive":
+            duration = float(self.get_parameter("explore_room_scan_advance_seconds").value) * 0.5
+            advance_speed = float(self.get_parameter("explore_room_scan_linear_speed").value)
+            elapsed = time.monotonic() - self.room_scan_phase_started_at
+            if not self.is_obstacle_now() and elapsed < duration:
+                twist = Twist()
+                twist.linear.x = advance_speed
+                self.cmd_vel_pub.publish(twist)
+                return
+            self.stop_motion()
+            self.room_scan_root_retry_count = 0
+            self.room_scan_is_retry_sweep = False
+            self.room_scan_steps_done_this_sweep = 0
+            self.room_scan_heading_step = 0
+            # Settle before asking the VLM anything, same as every other
+            # "arrived somewhere, about to look" transition.
+            self.room_scan_settle_next = "vlm_step"
+            self.room_phase = "settling"
+            self.room_scan_phase_started_at = time.monotonic()
             return
 
         if self.room_phase in ("advance_doorway", "backtrack_advance"):

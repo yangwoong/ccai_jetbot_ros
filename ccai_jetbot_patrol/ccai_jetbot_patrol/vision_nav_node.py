@@ -81,6 +81,17 @@ class VisionNavNode(Node):
         self.declare_parameter("obstacle_avoidance_max_seconds", 6.0)
         self.declare_parameter("obstacle_turn_pulse_seconds", 0.3)
         self.declare_parameter("obstacle_pause_seconds", 0.2)
+        # "주행뷰 오른쪽에 주행뷰에서 인식한 객체를 오버레이해서 보여줘"
+        # (2026-07-27) - runs the SAME already-loaded YOLO model (see
+        # init_yolo) against the D435i color feed too, so this doesn't spin
+        # up a second TensorRT engine/CUDA context (real resource concern on
+        # a Jetson Nano - the logs this session already showed USB
+        # bandwidth/power warnings). Throttled harder than the CSI path
+        # (every d435i_detect_every_n_frames frames) since it's purely a
+        # display aid, not a driving input.
+        self.declare_parameter("d435i_object_overlay_enabled", True)
+        self.declare_parameter("d435i_color_topic", "/camera/camera/color/image_raw/compressed")
+        self.declare_parameter("d435i_detect_every_n_frames", 10)
 
         self.cv2 = None
         self.np = None
@@ -108,19 +119,65 @@ class VisionNavNode(Node):
         self.smoothed_steer = 0.0
         self.last_frame = None
         self.orb = None
+        self.d435i_frame_count = 0
+        self.last_d435i_detections = []
 
         self.cmd_pub = self.create_publisher(Twist, "/ccai/vision_cmd_vel", 10)
         self.status_pub = self.create_publisher(String, "/ccai/vision_status", 10)
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.trigger_pub = self.create_publisher(String, "/ccai/vlm_trigger", 10)
         self.debug_image_pub = self.create_publisher(CompressedImage, "/ccai/vision_debug_image", 2)
+        self.d435i_debug_image_pub = self.create_publisher(CompressedImage, "/ccai/depth_objects_debug_image", 2)
         self.location_feature_result_pub = self.create_publisher(String, "/ccai/location_feature_result", 10)
         self.create_subscription(CompressedImage, str(self.get_parameter("image_topic").value), self.on_image, 2)
+        if bool(self.get_parameter("d435i_object_overlay_enabled").value):
+            self.create_subscription(
+                CompressedImage, str(self.get_parameter("d435i_color_topic").value), self.on_d435i_image, 2
+            )
         self.create_subscription(String, "/ccai/status", self.on_robot_status, 10)
         self.create_subscription(String, "/ccai/location_feature_request", self.on_location_feature_request, 10)
         self.create_timer(0.5, self.watchdog)
         self.init_cv()
         self.publish_event("vision_nav_node ready")
+
+    def on_d435i_image(self, msg: CompressedImage) -> None:
+        # Display-only: draws object boxes on the D435i color feed for the
+        # web UI's "D435i 객체 인식" panel, next to the drive view. Does not
+        # drive anything and does not touch depth_nav_node's own driving
+        # decision - reuses whichever YOLO backend init_yolo already loaded
+        # for the CSI feed, just run again against this frame.
+        if self.cv2 is None or not self.yolo_available():
+            return
+        try:
+            frame = self.decode_frame(msg.data)
+        except Exception:
+            return
+        if frame is None:
+            return
+        self.d435i_frame_count += 1
+        every = max(int(self.get_parameter("d435i_detect_every_n_frames").value), 1)
+        if self.d435i_frame_count % every == 0:
+            try:
+                self.last_d435i_detections = self.run_yolo(frame)
+            except Exception as exc:
+                self.get_logger().debug("d435i yolo failed: {0}".format(exc))
+        try:
+            debug = frame.copy()
+            for class_id, confidence, x, y, w, h in self.last_d435i_detections:
+                class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else "obj"
+                self.cv2.rectangle(debug, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                self.cv2.putText(
+                    debug, "{0} {1:.2f}".format(class_name, confidence), (x, max(y - 5, 10)),
+                    self.cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1,
+                )
+            ok, encoded = self.cv2.imencode(".jpg", debug, [int(self.cv2.IMWRITE_JPEG_QUALITY), 60])
+            if ok:
+                out = CompressedImage()
+                out.format = "jpeg"
+                out.data = encoded.tobytes()
+                self.d435i_debug_image_pub.publish(out)
+        except Exception as exc:
+            self.get_logger().debug("d435i debug frame draw failed: {0}".format(exc))
 
     def init_cv(self) -> None:
         try:
@@ -480,23 +537,19 @@ class VisionNavNode(Node):
         return change > threshold
 
     def publish_debug_frame(self, frame, is_obstacle: bool, detail: str) -> None:
-        """Draw what the obstacle detector is looking at directly onto the camera
-        frame and publish it, so an admin can watch in the web UI whether a real
-        obstacle is being recognized instead of only seeing the raw camera feed.
-        Never let a drawing bug take down the vision pipeline - this is purely
-        a debug aid.
+        """Draw recognized objects directly onto the CSI camera frame and
+        publish it - this panel is "CSI 카메라 (객체 인식용)" in the web UI.
+        2026-07-27: dropped the old floor-obstacle edge/color/path-region
+        debug rectangles (that was a separate "장애물 감지 디버그" view,
+        removed per user request - this camera doesn't drive anyway, see
+        drive_enabled's comment) so this view is purely about what objects
+        the YOLO/HOG detectors currently see. Never let a drawing bug take
+        down the vision pipeline - this is purely a debug aid.
         """
         if not bool(self.get_parameter("debug_image_enabled").value):
             return
         try:
             debug = frame.copy()
-            height, width = debug.shape[:2]
-            third = width // 3
-
-            edge_y0 = int(height * 0.52) + int((height - int(height * 0.52)) * 0.55)
-            self.cv2.rectangle(debug, (third, edge_y0), (2 * third, height), (0, 255, 255), 1)
-            self.cv2.rectangle(debug, (third, int(height * 0.60)), (2 * third, int(height * 0.85)), (255, 255, 0), 1)
-            self.cv2.rectangle(debug, (third, int(height * 0.90)), (2 * third, height), (255, 0, 0), 1)
 
             for class_id, confidence, x, y, w, h in self.last_detections:
                 class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else "obj"
@@ -506,13 +559,6 @@ class VisionNavNode(Node):
                     self.cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1,
                 )
 
-            status_text = "OBSTACLE" if is_obstacle else "CLEAR"
-            status_color = (0, 0, 255) if is_obstacle else (0, 200, 0)
-            self.cv2.putText(debug, status_text, (5, 15), self.cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2)
-            metrics = "edge={0:.3f} color={1:.1f} sudden={2:.1f}".format(
-                self.last_edge_obstacle_density, self.last_color_distance, self.last_bottom_change
-            )
-            self.cv2.putText(debug, metrics, (5, height - 8), self.cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
             # A visible timestamp + frame counter lets an admin directly confirm the
             # debug overlay is tracking the live camera in real time rather than
             # trusting it by eye - this is what actually made the earlier "preview

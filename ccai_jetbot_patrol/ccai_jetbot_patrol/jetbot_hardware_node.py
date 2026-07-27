@@ -58,6 +58,11 @@ class RawI2cBus:
         payload.extend([int(value) & 0xFF for value in values])
         os.write(self.fd, bytes(payload))
 
+    def read_i2c_block_data(self, address: int, register: int, length: int):
+        self.select(address)
+        os.write(self.fd, bytes([register & 0xFF]))
+        return list(os.read(self.fd, length))
+
     def close(self) -> None:
         os.close(self.fd)
 
@@ -159,6 +164,55 @@ class NullMotorBackend(MotorBackend):
         if now - self.last_report > 5.0:
             self.logger.warning("motor backend unavailable; ignoring motor command left={0:.2f}, right={1:.2f}".format(left, right))
             self.last_report = now
+
+
+class BatteryMonitor:
+    """Reads pack voltage from an INA219-style power monitor (common on
+    Waveshare Jetson robot HATs, including this JetBot AI kit's battery
+    board) and converts it to a rough percentage via linear interpolation
+    between battery_voltage_empty and battery_voltage_full - this is a
+    voltage-based approximation, not a fuel-gauge chip with its own charge
+    estimate, so it reads more pessimistic under load (motors drawing
+    current sags pack voltage) than at rest. The exact I2C address and
+    battery chemistry/cell count for this specific kit haven't been
+    verified on real hardware - see JetBotHardwareNode's declare_parameter
+    comment for battery_i2c_address/battery_voltage_full/empty.
+    """
+
+    REG_BUS_VOLTAGE = 0x02
+
+    def __init__(self, bus: int, address: int, voltage_empty: float, voltage_full: float, logger) -> None:
+        self.address = address
+        self.voltage_empty = voltage_empty
+        self.voltage_full = voltage_full
+        self.logger = logger
+        self.available = False
+        try:
+            self.i2c_bus = open_i2c_bus(bus)
+            # Probe once at startup so a missing/wrong-address chip fails
+            # fast and clearly, rather than silently reporting garbage on
+            # every OLED refresh.
+            self.read_voltage()
+            self.available = True
+            logger.info("battery monitor ready, bus={0}, address=0x{1:02x}".format(bus, address))
+        except Exception as exc:
+            logger.warning("battery monitor unavailable, bus={0}, address=0x{1:02x}: {2}".format(bus, address, exc))
+
+    def read_voltage(self) -> float:
+        data = self.i2c_bus.read_i2c_block_data(self.address, self.REG_BUS_VOLTAGE, 2)
+        raw = (data[0] << 8) | data[1]
+        return ((raw >> 3) * 4) / 1000.0
+
+    def read_percent(self):
+        if not self.available:
+            return None
+        try:
+            voltage = self.read_voltage()
+        except Exception as exc:
+            self.logger.debug("battery read failed: {0}".format(exc))
+            return None
+        span = max(self.voltage_full - self.voltage_empty, 0.01)
+        return clamp((voltage - self.voltage_empty) / span * 100.0, 0.0, 100.0)
 
 
 class StatusLed:
@@ -368,6 +422,16 @@ class JetBotHardwareNode(Node):
         self.declare_parameter("oled_enabled", True)
         self.declare_parameter("oled_bus", -1)
         self.declare_parameter("oled_refresh_seconds", 2.0)
+        # "OLED에 모터 정보말고 베터리 잔량을 표시해줘" (2026-07-27) - see
+        # BatteryMonitor's docstring. 0x41 is the common INA219 address on
+        # Waveshare Jetson robot HATs - unverified against this exact kit on
+        # real hardware, adjust if the probe at startup logs "unavailable".
+        # 8.4V/6.0V assumes a 2S 18650 pack (typical for this class of kit) -
+        # adjust to match the actual battery if different.
+        self.declare_parameter("battery_i2c_bus", -1)
+        self.declare_parameter("battery_i2c_address", 0x41)
+        self.declare_parameter("battery_voltage_full", 8.4)
+        self.declare_parameter("battery_voltage_empty", 6.0)
 
         self.event_pub = self.create_publisher(String, "/ccai/events", 10)
         self.status_pub = self.create_publisher(String, "/ccai/hardware_status", 10)
@@ -384,6 +448,14 @@ class JetBotHardwareNode(Node):
         self.oled = OledDisplay(
             bool(self.get_parameter("oled_enabled").value),
             int(self.get_parameter("oled_bus").value),
+            self.get_logger(),
+        )
+        battery_bus = int(self.get_parameter("battery_i2c_bus").value)
+        self.battery = BatteryMonitor(
+            battery_bus if battery_bus >= 0 else 1,
+            int(self.get_parameter("battery_i2c_address").value),
+            float(self.get_parameter("battery_voltage_empty").value),
+            float(self.get_parameter("battery_voltage_full").value),
             self.get_logger(),
         )
 
@@ -467,9 +539,11 @@ class JetBotHardwareNode(Node):
 
     def publish_hardware_status(self) -> None:
         ip_address = get_ip_address()
-        text = "ip={0}, motion={1}".format(ip_address, self.last_motion)
+        percent = self.battery.read_percent()
+        battery_text = "배터리 {0:.0f}%".format(percent) if percent is not None else "배터리 N/A"
+        text = "ip={0}, motion={1}, battery={2}".format(ip_address, self.last_motion, battery_text)
         self.status_pub.publish(String(data=text))
-        self.oled.show("CCAI JetBot", ip_address, self.last_motion)
+        self.oled.show("CCAI JetBot", ip_address, battery_text)
 
     def publish_event(self, text: str) -> None:
         self.event_pub.publish(String(data=text))

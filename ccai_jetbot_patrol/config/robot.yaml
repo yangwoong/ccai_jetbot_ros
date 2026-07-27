@@ -159,6 +159,14 @@ jetbot_hardware_node:
     oled_enabled: true
     oled_bus: -1
     oled_refresh_seconds: 2.0
+    # "OLED에 모터 정보말고 베터리 잔량을 표시해줘" (2026-07-27) - see
+    # jetbot_hardware_node.py's declare_parameter comment. Unverified
+    # address/battery chemistry for this exact kit - check the
+    # "battery monitor unavailable"/"ready" log line on startup and adjust.
+    battery_i2c_bus: -1
+    battery_i2c_address: 0x41
+    battery_voltage_full: 8.4
+    battery_voltage_empty: 6.0
 
 camera_node:
   ros__parameters:
@@ -234,6 +242,13 @@ vision_nav_node:
     obstacle_pause_seconds: 0.2
     speed_ramp_seconds: 1.5
     speed_ramp_min_factor: 0.35
+    # "주행뷰 오른쪽에... 인식한 객체를 오버레이" (2026-07-27) - reuses the
+    # same YOLO model already loaded above against the D435i color feed too,
+    # heavily throttled (display-only, not a driving input) - see
+    # on_d435i_image's declare_parameter comment.
+    d435i_object_overlay_enabled: true
+    d435i_color_topic: "/camera/camera/color/image_raw/compressed"
+    d435i_detect_every_n_frames: 10
     camera_alert_min_interval_seconds: 10.0
 
 depth_nav_node:
