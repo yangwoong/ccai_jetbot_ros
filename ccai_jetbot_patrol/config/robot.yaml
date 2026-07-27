@@ -65,6 +65,10 @@ patrol_node:
     # already judged movable, ask it to confirm from the close-up view
     # whether it's actually blocked or just narrow, this many times.
     explore_room_scan_max_obstacle_overrides: 2
+    # "장애물 발견시 회전, 후진후 회전등 로봇 크기를 고려하여 이동" - back
+    # away this long before starting the escape rotation scan, so turning
+    # in place doesn't graze whatever the robot just stopped against.
+    explore_room_scan_escape_backup_seconds: 1.5
     # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
     # comment. Fed into the VLM obstacle/scan prompts so it judges passability
     # against this robot's real footprint, not a guess.

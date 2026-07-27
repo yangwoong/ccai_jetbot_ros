@@ -67,6 +67,21 @@ class DepthNavNode(Node):
         self.declare_parameter("turn_speed", 0.16)
         self.declare_parameter("max_angular_speed", 0.22)
         self.declare_parameter("obstacle_stop_distance_m", 0.45)
+        # The debug overlay's ROI band (0.35-0.75 of frame height, see
+        # build_drivable_overlay) still shows perfectly clear floor as red
+        # near the bottom of that band - confirmed on real hardware. Simple
+        # camera-angle geometry: rows further down the image look at a
+        # steeper downward angle, so genuinely empty floor there measures
+        # closer than floor near the top of the band, regardless of any real
+        # obstacle. A single flat obstacle_stop_distance_m across the whole
+        # band can't tell that apart from an actual close object. This
+        # factor tapers the overlay-only red/green threshold down linearly
+        # across the band (1.0 = full obstacle_stop_distance_m at the top of
+        # the band, this factor * obstacle_stop_distance_m at the bottom),
+        # compensating for that perspective effect so clear floor reads
+        # green all the way down. Purely a display heuristic - does not
+        # touch obstacle_now/analyze_depth's actual driving decision.
+        self.declare_parameter("overlay_near_stop_factor", 0.5)
         self.declare_parameter("min_valid_frame_seconds", 1.0)
         self.declare_parameter("obstacle_avoidance_hold_seconds", 1.0)
         self.declare_parameter("obstacle_clear_confirm_frames", 5)
@@ -359,8 +374,19 @@ class DepthNavNode(Node):
         valid = (depth >= min_valid) & (depth <= max_valid)
         valid[:roi_top, :] = False
         valid[roi_bottom:, :] = False
-        red_mask = valid & (depth <= stop_distance)
-        open_floor = valid & (depth > stop_distance)
+
+        # Taper the red/green threshold across the band instead of one flat
+        # value - see overlay_near_stop_factor's declare_parameter comment
+        # (perspective alone makes clear floor read closer near the bottom
+        # of the band).
+        near_factor = float(self.get_parameter("overlay_near_stop_factor").value)
+        row_idx = self.np.arange(height, dtype=self.np.float32).reshape(-1, 1)
+        band_span = max(roi_bottom - roi_top, 1)
+        row_frac = self.np.clip((row_idx - roi_top) / band_span, 0.0, 1.0)
+        stop_map = stop_distance * (1.0 - row_frac * (1.0 - near_factor))
+
+        red_mask = valid & (depth <= stop_map)
+        open_floor = valid & (depth > stop_map)
 
         green_mask = self.np.zeros((height, width), dtype=bool)
         open_u8 = (open_floor.astype(self.np.uint8)) * 255

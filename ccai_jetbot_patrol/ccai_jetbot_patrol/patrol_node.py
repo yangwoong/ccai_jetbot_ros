@@ -152,6 +152,15 @@ class PatrolNode(Node):
         # overrides on the same attempt (the physical safety stop itself is
         # never disabled - this only decides whether to keep trying past it).
         self.declare_parameter("explore_room_scan_max_obstacle_overrides", 2)
+        # "장애물 발견시 회전, 후진후 회전등 로봇 크기를 고려하여 이동" -
+        # confirmed on real hardware that going straight into the escape
+        # rotation scan right where the robot stopped (i.e. right up against
+        # whatever it hit) could still graze the obstacle while turning in
+        # place, since this chassis isn't a perfect point-pivot. Back away a
+        # short, fixed distance first (room_scan_begin_escape_backup) to get
+        # clear before rotating - see explore_room_scan_max_door_chase for
+        # the analogous "keep pushing toward a real door" tuning below.
+        self.declare_parameter("explore_room_scan_escape_backup_seconds", 1.5)
         # Actual robot footprint - fed into the VLM prompts below (obstacle
         # re-check, per-heading scan) so it judges "can this specific robot
         # fit" against a real size instead of guessing. This robot is much
@@ -1100,11 +1109,15 @@ class PatrolNode(Node):
         # in fine quarter-step increments, checking a fresh VLM view at each
         # stop, until an actually-open direction is found or a full circle
         # has been searched.
-        self.publish_event("이동 중 장애물 감지 - 제자리에서 천천히 회전하며 빠져나갈 방향을 다시 찾습니다")
+        self.publish_event("이동 중 장애물 감지 - 뒤로 살짝 물러난 뒤 천천히 회전하며 빠져나갈 방향을 다시 찾습니다")
         self.room_scan_heading_step = self.room_scan_pending_doorway_step
         self.room_scan_escape_active = True
         self.room_scan_escape_attempts = 0
-        self.room_scan_begin_escape_step()
+        self.room_scan_begin_escape_backup()
+
+    def room_scan_begin_escape_backup(self) -> None:
+        self.room_phase = "escape_backup"
+        self.room_scan_phase_started_at = time.monotonic()
 
     def room_scan_begin_escape_step(self) -> None:
         max_attempts = self.room_scan_total_steps * 4  # one full circle at quarter-step granularity
@@ -1291,6 +1304,23 @@ class PatrolNode(Node):
 
         if self.room_phase in ("await_ceiling", "await_label", "await_room_check"):
             self.stop_motion()
+            return
+
+        if self.room_phase == "escape_backup":
+            # No is_obstacle_now() check here - the depth sensor only looks
+            # forward, and backing away from a front obstacle is inherently
+            # the safe direction (no rear sensor on this rig to check
+            # either way).
+            duration = float(self.get_parameter("explore_room_scan_escape_backup_seconds").value)
+            backup_speed = float(self.get_parameter("explore_room_scan_linear_speed").value)
+            elapsed = time.monotonic() - self.room_scan_phase_started_at
+            if elapsed < duration:
+                twist = Twist()
+                twist.linear.x = -backup_speed
+                self.cmd_vel_pub.publish(twist)
+                return
+            self.stop_motion()
+            self.room_scan_begin_escape_step()
             return
 
         if self.room_phase in ("advance_doorway", "backtrack_advance"):
