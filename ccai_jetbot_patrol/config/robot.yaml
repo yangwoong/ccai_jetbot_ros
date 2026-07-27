@@ -56,6 +56,11 @@ patrol_node:
     explore_room_scan_vlm_timeout_seconds: 15.0
     explore_room_scan_advance_seconds: 4.0
     explore_graph_file: "data/room_graph.json"
+    # "별도로 명령하지 않는 한 요청한 임무를 끝까지 수행해" - see
+    # room_scan_begin_backtrack_or_finish's comment. Retries a shifted sweep
+    # this many times at the root spot before actually declaring the
+    # mission done, instead of stopping after the first empty sweep.
+    explore_room_scan_max_root_retries: 3
 
 visual_odom_node:
   ros__parameters:

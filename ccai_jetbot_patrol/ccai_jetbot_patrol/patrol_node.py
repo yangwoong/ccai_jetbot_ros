@@ -128,6 +128,15 @@ class PatrolNode(Node):
         # doorway/room depth.
         self.declare_parameter("explore_room_scan_advance_seconds", 4.0)
         self.declare_parameter("explore_graph_file", "data/room_graph.json")
+        # "별도로 명령하지 않는 한 요청한 임무를 끝까지 수행해" - when the
+        # root spot's sweep finds no movable direction at all, don't just
+        # give up and STOP: with only explore_room_scan_headings samples per
+        # 360-degree sweep (now 4, ~90 degrees apart - see that param's
+        # comment), a real opening can easily fall in a blind spot between
+        # samples. Re-sweep from a shifted heading up to this many times
+        # before actually declaring the mission done - see
+        # room_scan_begin_backtrack_or_finish.
+        self.declare_parameter("explore_room_scan_max_root_retries", 3)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -177,6 +186,14 @@ class PatrolNode(Node):
         self.room_scan_total_steps = 8
         self.room_scan_current_room_id = None
         self.room_scan_heading_step = 0
+        # How many headings have been sampled in the CURRENT sweep - separate
+        # from room_scan_heading_step (which is an absolute, wrapping index
+        # used to record/recall each observation's direction) because a retry
+        # sweep starts from a shifted, non-zero heading_step (see
+        # room_scan_begin_backtrack_or_finish) - using heading_step itself to
+        # decide "has this sweep covered all headings yet" breaks the moment
+        # it wraps past 0 mid-sweep.
+        self.room_scan_steps_done_this_sweep = 0
         self.room_scan_rotate_delta = 0
         self.room_scan_rotate_started_at = 0.0
         self.room_scan_next_phase = ""
@@ -188,6 +205,8 @@ class PatrolNode(Node):
         self.room_scan_pending_doorway_step = 0
         self.room_scan_settle_next = ""
         self.room_scan_ceiling_direction_hint = None
+        self.room_scan_root_retry_count = 0
+        self.room_scan_is_retry_sweep = False
         self._room_scan_last_logged_phase = "<never>"
 
         self.cmd_vel_pub = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -473,9 +492,12 @@ class PatrolNode(Node):
         room_id = self.explore_graph.start_room(parent_room_id=None, entered_via_step=None)
         self.room_scan_current_room_id = room_id
         self.room_scan_heading_step = 0
+        self.room_scan_steps_done_this_sweep = 0
         self.room_scan_awaiting_label = False
         self.room_scan_awaiting_ceiling = False
         self.room_scan_ceiling_direction_hint = None
+        self.room_scan_root_retry_count = 0
+        self.room_scan_is_retry_sweep = False
         degrees = 360 // self.room_scan_total_steps
         self.publish_event(
             f"방-단위 자율탐색 시작 - 제자리에서 {degrees}도씩 회전하며 LLM으로 각 방향의 특징을 확인, "
@@ -683,8 +705,20 @@ class PatrolNode(Node):
         degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
         tag = "이동 가능" if can_go else "특징"
         self.publish_event(f"{degrees}도 방향 - {tag}: {description[:30]}")
-        if self.room_scan_heading_step < self.room_scan_total_steps - 1:
+        self.room_scan_steps_done_this_sweep += 1
+        # Uses the sweep-relative counter, not room_scan_heading_step itself:
+        # a retry sweep starts from a shifted (non-zero) heading_step and
+        # wraps past 0 partway through, so comparing heading_step directly
+        # against total_steps-1 would never fire (or fire at the wrong
+        # point) once it wraps.
+        if self.room_scan_steps_done_this_sweep < self.room_scan_total_steps:
             self.room_scan_begin_rotate(1, "await_vlm_step")
+        elif self.room_scan_is_retry_sweep:
+            # A retry sweep re-checks an already-labeled spot from a shifted
+            # heading (see room_scan_begin_backtrack_or_finish) - skip the
+            # ceiling question and label prompt again (already have both for
+            # this room) and go straight to picking a direction/backtracking.
+            self.room_scan_advance_after_label()
         else:
             self.room_scan_begin_rotate(1, "await_ceiling")
 
@@ -777,7 +811,28 @@ class PatrolNode(Node):
         room_id = self.room_scan_current_room_id
         entered_via = self.explore_graph.entered_via_step_of(room_id)
         if entered_via is None:
-            self.publish_event("탐색 완료 - 더 이상 갈 출입구가 없습니다. " + "; ".join(self.explore_graph.summary_lines()))
+            # Root spot with nothing more to try - per "별도로 명령하지 않는
+            # 한 요청한 임무를 끝까지 수행해", don't just give up here. With
+            # only explore_room_scan_headings samples per 360-degree sweep, a
+            # real opening can fall in a blind spot between samples - shift
+            # the sweep by one heading step and try again, up to
+            # explore_room_scan_max_root_retries times, before actually
+            # declaring the mission done.
+            max_retries = int(self.get_parameter("explore_room_scan_max_root_retries").value)
+            if self.room_scan_root_retry_count < max_retries:
+                self.room_scan_root_retry_count += 1
+                self.room_scan_is_retry_sweep = True
+                self.room_scan_steps_done_this_sweep = 0
+                self.publish_event(
+                    f"이 위치에서 갈 곳을 못 찾음 - 방향을 바꿔 다시 확인합니다 "
+                    f"({self.room_scan_root_retry_count}/{max_retries}) - 정지 명령 전까지 탐색을 계속합니다"
+                )
+                self.room_scan_begin_rotate(1, "await_vlm_step")
+                return
+            self.publish_event(
+                "탐색 완료 - 여러 번 다시 확인해도 더 이상 갈 곳이 없습니다. "
+                + "; ".join(self.explore_graph.summary_lines())
+            )
             self.room_phase = None
             self.set_state(PatrolState.STOPPED)
             self.stop_motion()
@@ -817,6 +872,9 @@ class PatrolNode(Node):
         room_id = self.explore_graph.start_room(parent_room_id=parent_id, entered_via_step=entered_via)
         self.room_scan_current_room_id = room_id
         self.room_scan_heading_step = 0
+        self.room_scan_steps_done_this_sweep = 0
+        self.room_scan_root_retry_count = 0
+        self.room_scan_is_retry_sweep = False
         self.publish_event("새 지점 도착 - 특징 탐색 계속")
         # Settle before the very first VLM request here too, same as every
         # other rotation-then-ask transition (room_scan_complete_rotation) -

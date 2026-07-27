@@ -342,12 +342,23 @@ class DepthNavNode(Node):
         max_valid = float(self.get_parameter("max_valid_depth_m").value)
         stop_distance = float(self.get_parameter("obstacle_stop_distance_m").value)
 
-        # Only classify the lower portion of the frame (the floor ahead) -
-        # painting the whole image would tint walls/ceiling/sky green too,
-        # since a far wall can easily read as "open" in raw depth terms.
-        roi_top = int(height * 0.30)
+        # Same band as analyze_depth() uses for the actual driving decision
+        # (0.35-0.75 of the frame height) - NOT just "top cropped, bottom
+        # included". Confirmed on real hardware: including the very bottom
+        # of the frame (floor right in front of/under the robot) painted it
+        # red even when clearly drivable, because that floor is always the
+        # closest point in the whole depth image by simple camera geometry
+        # (steepest viewing angle = shortest range), regardless of whether
+        # anything is actually blocking it - it's not an obstacle, it's
+        # perspective. Excluding it (and matching analyze_depth's own band)
+        # keeps this overlay honest about what "close" actually means here,
+        # and keeps it visually consistent with the band that's actually
+        # driving the robot.
+        roi_top = int(height * 0.35)
+        roi_bottom = int(height * 0.75)
         valid = (depth >= min_valid) & (depth <= max_valid)
         valid[:roi_top, :] = False
+        valid[roi_bottom:, :] = False
         red_mask = valid & (depth <= stop_distance)
         open_floor = valid & (depth > stop_distance)
 
