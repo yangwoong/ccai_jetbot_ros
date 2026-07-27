@@ -218,6 +218,7 @@ class PatrolNode(Node):
         self.room_scan_vlm_text = ""
         self.room_scan_awaiting_label = False
         self.room_scan_awaiting_ceiling = False
+        self.room_scan_awaiting_room_check = False
         self.room_scan_pending_doorway_step = 0
         self.room_scan_settle_next = ""
         self.room_scan_ceiling_direction_hint = None
@@ -305,6 +306,7 @@ class PatrolNode(Node):
             self.room_phase = None
             self.room_scan_awaiting_label = False
             self.room_scan_awaiting_ceiling = False
+            self.room_scan_awaiting_room_check = False
             self.publish_event("autonomous exploration stopped")
         elif command.type == "say":
             self.publish_event(command.text or command.raw)
@@ -512,6 +514,7 @@ class PatrolNode(Node):
         self.room_scan_steps_done_this_sweep = 0
         self.room_scan_awaiting_label = False
         self.room_scan_awaiting_ceiling = False
+        self.room_scan_awaiting_room_check = False
         self.room_scan_ceiling_direction_hint = None
         self.room_scan_root_retry_count = 0
         self.room_scan_is_retry_sweep = False
@@ -719,9 +722,9 @@ class PatrolNode(Node):
         # and separately flagged movable/not so room_scan_pick_doorway() can
         # still find only the directions worth actually driving toward.
         self.explore_graph.add_observation(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30], can_go)
-        degrees = self.room_scan_heading_step * (360 // self.room_scan_total_steps)
+        degrees = self.room_scan_heading_step * (360.0 / self.room_scan_total_steps)
         tag = "이동 가능" if can_go else "특징"
-        self.publish_event(f"{degrees}도 방향 - {tag}: {description[:30]}")
+        self.publish_event(f"{degrees:.0f}도 방향 - {tag}: {description[:30]}")
         self.room_scan_steps_done_this_sweep += 1
         # Uses the sweep-relative counter, not room_scan_heading_step itself:
         # a retry sweep starts from a shifted (non-zero) heading_step and
@@ -833,19 +836,28 @@ class PatrolNode(Node):
             # 한 요청한 임무를 끝까지 수행해", don't just give up here. With
             # only explore_room_scan_headings samples per 360-degree sweep, a
             # real opening can fall in a blind spot between samples - shift
-            # the sweep by one heading step and try again, up to
-            # explore_room_scan_max_root_retries times, before actually
-            # declaring the mission done.
+            # the sweep and try again, up to explore_room_scan_max_root_retries
+            # times, before actually declaring the mission done.
+            #
+            # The shift is HALF a heading step (e.g. 45 degrees with the
+            # current 4-heading/90-degree-per-step calibration), not a full
+            # step - confirmed on real hardware that shifting by a full step
+            # just re-samples the exact same 4 physical bearings (0/90/180/270
+            # again, since they're evenly spaced by exactly one step), so
+            # every retry was blindly re-checking ground already covered
+            # instead of the gaps between it. A half-step shift actually
+            # looks at the 45/135/225/315-degree gaps the original sweep
+            # skipped entirely.
             max_retries = int(self.get_parameter("explore_room_scan_max_root_retries").value)
             if self.room_scan_root_retry_count < max_retries:
                 self.room_scan_root_retry_count += 1
                 self.room_scan_is_retry_sweep = True
                 self.room_scan_steps_done_this_sweep = 0
                 self.publish_event(
-                    f"이 위치에서 갈 곳을 못 찾음 - 방향을 바꿔 다시 확인합니다 "
+                    f"이 위치에서 갈 곳을 못 찾음 - 방향을 45도 바꿔 다시 확인합니다 "
                     f"({self.room_scan_root_retry_count}/{max_retries}) - 정지 명령 전까지 탐색을 계속합니다"
                 )
-                self.room_scan_begin_rotate(1, "await_vlm_step")
+                self.room_scan_begin_rotate(0.5, "await_vlm_step")
                 return
             self.publish_event(
                 "탐색 완료 - 여러 번 다시 확인해도 더 이상 갈 곳이 없습니다. "
@@ -883,6 +895,39 @@ class PatrolNode(Node):
             self.room_phase = next_phase
         else:
             self.room_phase = next_phase
+
+    def room_scan_begin_new_room_check(self) -> None:
+        """After driving through what looked like a doorway/opening, don't
+        blindly assume it left the room - confirmed on real hardware: a
+        ~30-40cm advance repeatedly got treated as "a whole new room" (fresh
+        full sweep + re-asking the admin for a label, even answering the
+        same name each time) when the ceiling view showed the exact same
+        continuous fluorescent lights, i.e. it never actually left the room.
+        Ask the CSI-facing VLM to compare the current ceiling against this
+        spot's already-recorded ceiling description before deciding.
+        """
+        self.room_scan_settle_next = "room_check"
+        self.room_phase = "settling"
+        self.room_scan_phase_started_at = time.monotonic()
+
+    def room_scan_request_new_room_check(self) -> None:
+        self.room_scan_awaiting_room_check = True
+        self.room_phase = "await_room_check"
+        self.room_scan_phase_started_at = time.monotonic()
+        prev_ceiling = self.explore_graph.rooms.get(self.room_scan_current_room_id, {}).get(
+            "ceiling_description", ""
+        )
+        question = (
+            f"방금 전 위치의 천장 특징은 '{prev_ceiling[:40]}' 였습니다. 지금 보이는 천장이 "
+            "형광등/조명이 끊김없이 이어지는 같은 공간인지, 문이나 벽 경계를 지나 정말 새로운 "
+            "방으로 들어온 것인지 판단해서 'NEWROOM:YES' 또는 'NEWROOM:NO'로 시작하고 이유를 "
+            "10자 이내로 적어줘."
+        )
+        self.request_analysis(question, location="")
+
+    def room_scan_same_room_continue(self) -> None:
+        self.publish_event("같은 공간으로 판단 - 새 지점으로 등록하지 않고 다른 방향을 계속 찾습니다")
+        self.room_scan_advance_after_label()
 
     def room_scan_enter_new_room(self) -> None:
         parent_id = self.room_scan_current_room_id
@@ -1040,6 +1085,8 @@ class PatrolNode(Node):
                 self.room_scan_request_vlm_step()
             elif self.room_scan_settle_next == "obstacle_check":
                 self.room_scan_request_obstacle_check()
+            elif self.room_scan_settle_next == "room_check":
+                self.room_scan_request_new_room_check()
             else:
                 self.room_scan_request_ceiling_analysis()
             return
@@ -1075,7 +1122,7 @@ class PatrolNode(Node):
             self.room_scan_process_obstacle_check_result()
             return
 
-        if self.room_phase in ("await_ceiling", "await_label"):
+        if self.room_phase in ("await_ceiling", "await_label", "await_room_check"):
             self.stop_motion()
             return
 
@@ -1104,7 +1151,7 @@ class PatrolNode(Node):
                 return
             self.stop_motion()
             if self.room_phase == "advance_doorway":
-                self.room_scan_enter_new_room()
+                self.room_scan_begin_new_room_check()
             else:
                 self.room_scan_finish_backtrack()
             return
@@ -1159,6 +1206,17 @@ class PatrolNode(Node):
             summary = msg.data
             risk = any(word in msg.data.lower() for word in ["person", "hazard", "fire", "blocked"])
         self.last_vlm_summary = summary
+        if self.room_scan_awaiting_room_check:
+            self.room_scan_awaiting_room_check = False
+            self.pending_analysis = False
+            self.pending_analysis_location = ""
+            is_new_room = summary.upper().startswith("NEWROOM:YES")
+            self.publish_event(f"공간 전환 판단(LLM): {summary[:50]}")
+            if is_new_room:
+                self.room_scan_enter_new_room()
+            else:
+                self.room_scan_same_room_continue()
+            return
         if self.room_scan_awaiting_ceiling:
             self.room_scan_awaiting_ceiling = False
             self.pending_analysis = False
