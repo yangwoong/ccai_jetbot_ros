@@ -78,6 +78,9 @@ patrol_node:
     # abandoned - see patrol_node.py's room_scan_abort_advance comment.
     explore_room_scan_max_door_nudges: 2
     explore_room_scan_door_nudge_step: 0.15
+    # "영상정보로 벽이 보이는 곳은 갈 필요없어" (2026-07-27) - see
+    # patrol_node.py's declare_parameter comment.
+    explore_room_scan_wall_distance_m: 0.35
     # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
     # comment. Fed into the VLM obstacle/scan prompts so it judges passability
     # against this robot's real footprint, not a guess.

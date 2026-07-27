@@ -489,11 +489,18 @@ class DepthNavNode(Node):
     def publish_status(self, state: str, detail: str = "", stop: bool = False) -> None:
         # obstacle_now lets other nodes (patrol_node's point-to-point
         # controller) check "is it safe to drive forward right now" directly
-        # instead of string-parsing `detail`.
+        # instead of string-parsing `detail`. left/center/right_distance
+        # (2026-07-27) let patrol_node's room-scan explorer cross-check the
+        # VLM's DOOR/FLOOR/NO per-heading judgment against the actual
+        # measured depth ("영상정보로 벽이 보이는 곳은 갈 필요없어... 주행뷰의
+        # 거리정보... 활용해서") instead of trusting the image alone.
         obstacle_now = bool(self.last_signals["obstacle_now"]) if self.last_signals is not None else False
         payload = {
             "state": state, "detail": detail, "stop": stop, "mode": self.mode, "target": self.target,
             "obstacle_now": obstacle_now,
+            "left_distance": float(self.last_signals["left_distance"]) if self.last_signals is not None else 0.0,
+            "center_distance": float(self.last_signals["center_distance"]) if self.last_signals is not None else 0.0,
+            "right_distance": float(self.last_signals["right_distance"]) if self.last_signals is not None else 0.0,
         }
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
 

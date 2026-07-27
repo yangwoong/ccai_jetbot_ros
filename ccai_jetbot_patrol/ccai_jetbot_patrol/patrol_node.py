@@ -187,6 +187,15 @@ class PatrolNode(Node):
         # direction. Plain FLOOR candidates skip straight to that fallback.
         self.declare_parameter("explore_room_scan_max_door_nudges", 2)
         self.declare_parameter("explore_room_scan_door_nudge_step", 0.15)
+        # "영상정보로 벽이 보이는 곳은 갈 필요없어" - cross-check the VLM's
+        # per-heading DOOR/FLOOR judgment against the D435i's actual
+        # measured center-column depth (see current_forward_distance) -
+        # below this, treat it as blocked regardless of what the image
+        # judgment said. Deliberately smaller than depth_nav_node's
+        # obstacle_stop_distance_m (0.45m): this is a "does the image
+        # judgment even make sense" sanity check at scan time, not the
+        # physical safety stop itself (that's still depth_nav_node's job).
+        self.declare_parameter("explore_room_scan_wall_distance_m", 0.35)
         # Actual robot footprint - fed into the VLM prompts below (obstacle
         # re-check, per-heading scan) so it judges "can this specific robot
         # fit" against a real size instead of guessing. This robot is much
@@ -712,6 +721,19 @@ class PatrolNode(Node):
         except Exception:
             return False
 
+    def current_forward_distance(self) -> float:
+        """Real D435i-measured center-column depth (meters), from
+        depth_nav_node's vision_status - see room_scan_process_vlm_step_result
+        and room_scan_pick_doorway. 0.0 if unavailable (treated as
+        "unknown", never as "wide open")."""
+        try:
+            payload = json.loads(self.last_vision_status)
+            if payload.get("state") == "depth_camera_timeout":
+                return 0.0
+            return float(payload.get("center_distance", 0.0))
+        except Exception:
+            return 0.0
+
     def on_admin_text(self, msg: String) -> None:
         if self.state == PatrolState.EXPLORING and self.room_scan_awaiting_label:
             text = msg.data.strip()
@@ -858,6 +880,16 @@ class PatrolNode(Node):
                 category = "floor"
             else:
                 category = "none"
+        distance = self.current_forward_distance()
+        wall_distance = float(self.get_parameter("explore_room_scan_wall_distance_m").value)
+        # "영상정보로 벽이 보이는 곳은 갈 필요없어" - cross-check the VLM's
+        # image-only judgment against the real measured depth: a heading
+        # this close is a wall/obstacle regardless of what the image looked
+        # like (VLM misjudging "open floor" past a close, flat-looking
+        # surface is a real failure mode - confirmed on real hardware that
+        # it kept picking headings that "looked" open but led nowhere).
+        if category != "none" and 0.0 < distance < wall_distance:
+            category = "none"
         can_go = category != "none"
         description = text.split(":", 1)[1].strip() if ":" in text else text
         if description.upper().startswith(("YES:", "NO:")):
@@ -869,11 +901,17 @@ class PatrolNode(Node):
         # find only the directions worth actually driving toward, with an
         # actual doorway/exit preferred over merely open floor.
         self.explore_graph.add_observation(
-            self.room_scan_current_room_id, self.room_scan_heading_step, description[:30], can_go, category
+            self.room_scan_current_room_id,
+            self.room_scan_heading_step,
+            description[:30],
+            can_go,
+            category,
+            distance,
         )
         degrees = self.room_scan_heading_step * (360.0 / self.room_scan_total_steps)
         tag = {"door": "출입구", "floor": "이동 가능(바닥)"}.get(category, "특징")
-        self.publish_event(f"{degrees:.0f}도 방향 - {tag}: {description[:30]}")
+        distance_note = f" (거리 {distance:.2f}m)" if distance > 0.0 else ""
+        self.publish_event(f"{degrees:.0f}도 방향 - {tag}: {description[:30]}{distance_note}")
         self.room_scan_steps_done_this_sweep += 1
         # Uses the sweep-relative counter, not room_scan_heading_step itself:
         # a retry sweep starts from a shifted (non-zero) heading_step and
@@ -903,10 +941,11 @@ class PatrolNode(Node):
         self.request_analysis(
             "이 사진은 천장 카메라 영상이며, 벽/천장 경계선과 조명 윤곽 등 구조적 엣지가 강조되어 "
             "표시되어 있습니다. 그 엣지를 참고해서 천장의 모양과 이 공간의 대략적인 크기를 15자 "
-            "이내로 한국어로 설명해줘. 조명(형광등) 배치가 끊기거나 천장 재질/높이가 바뀌는 경계가 "
-            "보이면 그게 문/출입구일 가능성이 있으니 그 방향도 간단히 언급해줘. 그리고 로봇이 계속 "
-            "탐색하기 좋아 보이는 방향을 '방향:왼쪽', '방향:오른쪽', '방향:직진', '방향:후진' 중 "
-            "하나로 마지막에 덧붙여줘.",
+            "이내로 한국어로 설명해줘. 특히 문틀(문 위 상인방, 문 양옆 세로 기둥 모양의 경계선)이나 "
+            "조명(형광등) 배치가 끊기는 지점, 천장 재질/높이가 바뀌는 경계가 보이면 그게 문/출입구일 "
+            "가능성이 크니 그 방향을 꼭 언급해줘. 그리고 로봇이 방 밖으로 나가서 계속 탐색하기 좋아 "
+            "보이는 방향을 '방향:왼쪽', '방향:오른쪽', '방향:직진', '방향:후진' 중 하나로 마지막에 "
+            "덧붙여줘.",
             location="",
         )
 
@@ -970,14 +1009,26 @@ class PatrolNode(Node):
         hint = self.room_scan_ceiling_direction_hint
         total = self.room_scan_total_steps
         ideal = {"좌": total * 0.25, "우": total * 0.75, "직진": 0.0, "후진": total * 0.5}.get(hint)
-        if ideal is None:
-            return candidates[0]
+        # "바닥면적이 넓은 곳을 영상으로 보고 그냥 지나치고 있어... 주행뷰의
+        # 거리정보, 바닥면적을... 활용해서 넓은 곳으로" (2026-07-27) - each
+        # candidate's recorded "distance" (real D435i depth measured toward
+        # that heading at scan time, see room_scan_process_vlm_step_result)
+        # is factored in alongside the ceiling hint, so a heading that
+        # measures noticeably more open than the others (more likely to
+        # actually lead somewhere, e.g. out through a doorway into a
+        # corridor) is preferred over one that just happens to align
+        # slightly better with the ceiling hint alone.
+        distance_weight = 0.5  # meters of measured openness worth ~1 heading-step of hint alignment
 
-        def offset(step: int) -> float:
-            diff = abs(step - ideal) % total
-            return min(diff, total - diff)
+        def score(candidate: dict) -> float:
+            distance = float(candidate.get("distance", 0.0) or 0.0)
+            if ideal is None:
+                return -distance
+            diff = abs(candidate["step"] - ideal) % total
+            offset = min(diff, total - diff)
+            return offset - distance_weight * distance
 
-        return min(candidates, key=lambda d: offset(d["step"]))
+        return min(candidates, key=score)
 
     def room_scan_advance_after_label(self) -> None:
         room_id = self.room_scan_current_room_id

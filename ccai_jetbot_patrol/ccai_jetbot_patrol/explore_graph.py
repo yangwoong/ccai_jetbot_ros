@@ -64,12 +64,24 @@ class RoomGraph:
         self.save()
         return room_id
 
-    def add_observation(self, room_id: str, step: int, description: str, movable: bool, category: str = "floor") -> None:
+    def add_observation(
+        self, room_id: str, step: int, description: str, movable: bool, category: str = "floor", distance: float = 0.0
+    ) -> None:
         # category: "door" (leads to another room/corridor - the primary
         # exploration target), "floor" (just open floor in the same room),
         # or "none" (blocked). See untried_movable's door-first ordering.
+        # distance: real D435i depth measured toward this heading at scan
+        # time (meters, 0.0 if unavailable) - lets room_scan_pick_doorway
+        # prefer headings that measure more open, not just image judgment.
         self.rooms[room_id]["observations"].append(
-            {"step": step, "description": description, "movable": movable, "tried": False, "category": category}
+            {
+                "step": step,
+                "description": description,
+                "movable": movable,
+                "tried": False,
+                "category": category,
+                "distance": distance,
+            }
         )
         self.save()
 
