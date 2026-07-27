@@ -56,9 +56,12 @@ class RoomGraph:
         self.save()
         return room_id
 
-    def add_observation(self, room_id: str, step: int, description: str, movable: bool) -> None:
+    def add_observation(self, room_id: str, step: int, description: str, movable: bool, category: str = "floor") -> None:
+        # category: "door" (leads to another room/corridor - the primary
+        # exploration target), "floor" (just open floor in the same room),
+        # or "none" (blocked). See untried_movable's door-first ordering.
         self.rooms[room_id]["observations"].append(
-            {"step": step, "description": description, "movable": movable, "tried": False}
+            {"step": step, "description": description, "movable": movable, "tried": False, "category": category}
         )
         self.save()
 
@@ -71,11 +74,16 @@ class RoomGraph:
         self.save()
 
     def untried_movable(self, room_id: str) -> List[dict]:
-        return [
-            obs
-            for obs in self.rooms.get(room_id, {}).get("observations", [])
-            if obs.get("movable") and not obs.get("tried")
+        # Doors (leads out of this room) sort before plain open floor - per
+        # user request, finding an actual exit/doorway is the primary
+        # exploration goal, not just wandering the current room's open area.
+        obs = [
+            o
+            for o in self.rooms.get(room_id, {}).get("observations", [])
+            if o.get("movable") and not o.get("tried")
         ]
+        obs.sort(key=lambda o: 0 if o.get("category") == "door" else 1)
+        return obs
 
     def mark_observation_tried(self, room_id: str, step: int) -> None:
         for obs in self.rooms.get(room_id, {}).get("observations", []):
@@ -91,15 +99,3 @@ class RoomGraph:
 
     def label_of(self, room_id: str) -> Optional[str]:
         return self.rooms.get(room_id, {}).get("label")
-
-    def summary_lines(self) -> List[str]:
-        lines = []
-        for room_id, room in self.rooms.items():
-            label = room.get("label") or f"(이름없음#{room_id})"
-            observations = room.get("observations", [])
-            movable_count = sum(1 for obs in observations if obs.get("movable"))
-            lines.append(
-                f"{label}: 관찰된 특징 {len(observations)}개(이동가능 {movable_count}개), "
-                f"천장 {room.get('ceiling_description') or '미기록'}"
-            )
-        return lines

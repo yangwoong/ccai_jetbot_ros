@@ -128,15 +128,11 @@ class PatrolNode(Node):
         # doorway/room depth.
         self.declare_parameter("explore_room_scan_advance_seconds", 4.0)
         self.declare_parameter("explore_graph_file", "data/room_graph.json")
-        # "별도로 명령하지 않는 한 요청한 임무를 끝까지 수행해" - when the
-        # root spot's sweep finds no movable direction at all, don't just
-        # give up and STOP: with only explore_room_scan_headings samples per
-        # 360-degree sweep (now 4, ~90 degrees apart - see that param's
-        # comment), a real opening can easily fall in a blind spot between
-        # samples. Re-sweep from a shifted heading up to this many times
-        # before actually declaring the mission done - see
-        # room_scan_begin_backtrack_or_finish.
-        self.declare_parameter("explore_room_scan_max_root_retries", 3)
+        # "탐색중단은 통로가 막혀서 중단하면 안돼" - when the root spot's
+        # sweep finds no movable direction at all, this never transitions to
+        # STOPPED on its own; it re-sweeps from a rotating fractional offset
+        # forever - see room_scan_begin_backtrack_or_finish. Only an explicit
+        # 정지/explore_stop command actually ends the mission.
         # "LLM이 적극 개입하여 영상을 분석하며 자율탐색" - confirmed on real
         # hardware: the D435i's raw obstacle_now (a flat depth threshold)
         # kept aborting directions the VLM had itself already judged
@@ -153,6 +149,18 @@ class PatrolNode(Node):
         # overrides on the same attempt (the physical safety stop itself is
         # never disabled - this only decides whether to keep trying past it).
         self.declare_parameter("explore_room_scan_max_obstacle_overrides", 2)
+        # Actual robot footprint - fed into the VLM prompts below (obstacle
+        # re-check, per-heading scan) so it judges "can this specific robot
+        # fit" against a real size instead of guessing. This robot is much
+        # smaller than the 0.6m obstacle_stop_distance_m (depth_nav_node's
+        # config) implies - that threshold was raised generically for
+        # sensor-noise margin, not sized to this chassis, and confirmed on
+        # real hardware to reject passable furniture gaps constantly in a
+        # cluttered office. See config/robot.yaml's depth_nav_node section
+        # for the corresponding reduction.
+        self.declare_parameter("robot_width_m", 0.18)
+        self.declare_parameter("robot_length_m", 0.18)
+        self.declare_parameter("robot_height_m", 0.25)
 
         self.state = PatrolState.IDLE
         self.current_target = ""
@@ -683,17 +691,18 @@ class PatrolNode(Node):
         self.room_scan_vlm_text = ""
         self.room_scan_phase_started_at = time.monotonic()
         self.room_phase = "await_vlm_step"
-        # One combined judgment instead of two - covers both "there's a
-        # literal doorway/passage" AND "there's open floor worth exploring
-        # even without a formal doorway" (e.g. a large open room), per the
-        # user's request that the exploration decision should come from the
-        # VLM reading the actual navigable space, not just doors. Either case
-        # is a valid direction to eventually drive toward, so they're treated
-        # the same way downstream (see room_scan_process_vlm_step_result).
+        # DOOR vs FLOOR vs blocked, not a flat yes/no - per user request that
+        # exploration should actively target finding an actual doorway/exit
+        # first (into a corridor/another room), only settling for "just open
+        # floor within the same room" when no real door is found - see
+        # RoomGraph.untried_movable's door-first sort and room_scan_pick_doorway.
+        width = float(self.get_parameter("robot_width_m").value)
+        height = float(self.get_parameter("robot_height_m").value)
         question = (
-            "이 사진은 로봇 정면입니다. 로봇이 이 방향으로 이동할 수 있는 열린 공간, 문, 통로가 "
-            "보이면 'GO:YES'로 시작해서 이어서 10자 이내로 무엇이 보이는지 적어줘 (예: 문, 복도, "
-            "넓은 바닥). 벽이나 가구로 막혀서 못 가면 'GO:NO'로 시작해서 10자 이내로 설명해줘."
+            f"이 사진은 로봇(가로세로 약 {width*100:.0f}cm, 높이 {height*100:.0f}cm) 정면입니다. "
+            "이 방향에 문이나 다른 방/복도로 이어지는 출입구가 보이면 'DOOR:YES'로 시작, 출입구는 "
+            "아니지만 로봇이 지나갈 수 있는 열린 바닥이 보이면 'FLOOR:YES'로 시작, 벽이나 가구로 "
+            "막혀서 이 작은 로봇도 못 지나가면 'NO'로 시작해서 10자 이내로 무엇이 보이는지 적어줘."
         )
         self.get_logger().info(f"[room_scan] vlm_explore_trigger sent (heading_step={self.room_scan_heading_step})")
         self.vlm_explore_trigger_pub.publish(String(data=json.dumps({"question": question}, ensure_ascii=False)))
@@ -711,19 +720,36 @@ class PatrolNode(Node):
     def room_scan_process_vlm_step_result(self) -> None:
         text = (self.room_scan_vlm_text or "").strip()
         upper = text.upper()
-        can_go = upper.startswith("GO:YES") or (
-            "GO:NO" not in upper and any(k in text for k in ("출입구", "통로", "문이", "문 ", "열린", "공간"))
-        )
+        if upper.startswith("DOOR:YES"):
+            category = "door"
+        elif upper.startswith("FLOOR:YES"):
+            category = "floor"
+        elif upper.startswith("NO"):
+            category = "none"
+        else:
+            # Loose fallback for whatever format actually came back instead
+            # of the requested prefix.
+            if any(k in text for k in ("출입구", "문이", "문 ", "복도")):
+                category = "door"
+            elif any(k in text for k in ("열린", "공간", "바닥")):
+                category = "floor"
+            else:
+                category = "none"
+        can_go = category != "none"
         description = text.split(":", 1)[1].strip() if ":" in text else text
         if description.upper().startswith(("YES:", "NO:")):
             description = description.split(":", 1)[1].strip()
         # Every heading's feature is remembered (per user request: the VLM
         # judgment - what's visible here - IS the map, not just doorways),
-        # and separately flagged movable/not so room_scan_pick_doorway() can
-        # still find only the directions worth actually driving toward.
-        self.explore_graph.add_observation(self.room_scan_current_room_id, self.room_scan_heading_step, description[:30], can_go)
+        # and separately flagged movable/not (and door-vs-floor - see
+        # RoomGraph.untried_movable) so room_scan_pick_doorway() can still
+        # find only the directions worth actually driving toward, with an
+        # actual doorway/exit preferred over merely open floor.
+        self.explore_graph.add_observation(
+            self.room_scan_current_room_id, self.room_scan_heading_step, description[:30], can_go, category
+        )
         degrees = self.room_scan_heading_step * (360.0 / self.room_scan_total_steps)
-        tag = "이동 가능" if can_go else "특징"
+        tag = {"door": "출입구", "floor": "이동 가능(바닥)"}.get(category, "특징")
         self.publish_event(f"{degrees:.0f}도 방향 - {tag}: {description[:30]}")
         self.room_scan_steps_done_this_sweep += 1
         # Uses the sweep-relative counter, not room_scan_heading_step itself:
@@ -752,9 +778,10 @@ class PatrolNode(Node):
         # "which way does the ceiling suggest is worth exploring", not just
         # "first untried doorway in scan order".
         self.request_analysis(
-            "천장의 모양과 이 공간의 대략적인 크기를 15자 이내로 한국어로 설명해줘. 그리고 로봇이 계속 "
-            "탐색하기 좋아 보이는 방향을 '방향:왼쪽', '방향:오른쪽', '방향:직진', '방향:후진' 중 하나로 "
-            "마지막에 덧붙여줘.",
+            "천장의 모양과 이 공간의 대략적인 크기를 15자 이내로 한국어로 설명해줘. 조명(형광등) 배치가 "
+            "끊기거나 천장 재질/높이가 바뀌는 경계가 보이면 그게 문/출입구일 가능성이 있으니 그 방향도 "
+            "간단히 언급해줘. 그리고 로봇이 계속 탐색하기 좋아 보이는 방향을 '방향:왼쪽', '방향:오른쪽', "
+            "'방향:직진', '방향:후진' 중 하나로 마지막에 덧붙여줘.",
             location="",
         )
 
@@ -803,6 +830,16 @@ class PatrolNode(Node):
         candidates = self.explore_graph.untried_movable(room_id)
         if not candidates:
             return None
+        # untried_movable() already sorts doors before plain open floor, but
+        # that alone only breaks ties - without this, a floor candidate that
+        # happens to align better with the ceiling hint below would still
+        # win over a door candidate that aligns worse, which defeats "find
+        # an actual doorway first". Restrict to doors whenever any exist;
+        # only fall back to floor-only candidates when there's no door left
+        # to try.
+        doors = [c for c in candidates if c.get("category") == "door"]
+        if doors:
+            candidates = doors
         hint = self.room_scan_ceiling_direction_hint
         total = self.room_scan_total_steps
         ideal = {"좌": total * 0.25, "우": total * 0.75, "직진": 0.0, "후진": total * 0.5}.get(hint)
@@ -832,40 +869,28 @@ class PatrolNode(Node):
         room_id = self.room_scan_current_room_id
         entered_via = self.explore_graph.entered_via_step_of(room_id)
         if entered_via is None:
-            # Root spot with nothing more to try - per "별도로 명령하지 않는
-            # 한 요청한 임무를 끝까지 수행해", don't just give up here. With
-            # only explore_room_scan_headings samples per 360-degree sweep, a
-            # real opening can fall in a blind spot between samples - shift
-            # the sweep and try again, up to explore_room_scan_max_root_retries
-            # times, before actually declaring the mission done.
-            #
-            # The shift is HALF a heading step (e.g. 45 degrees with the
-            # current 4-heading/90-degree-per-step calibration), not a full
-            # step - confirmed on real hardware that shifting by a full step
-            # just re-samples the exact same 4 physical bearings (0/90/180/270
-            # again, since they're evenly spaced by exactly one step), so
-            # every retry was blindly re-checking ground already covered
-            # instead of the gaps between it. A half-step shift actually
-            # looks at the 45/135/225/315-degree gaps the original sweep
-            # skipped entirely.
-            max_retries = int(self.get_parameter("explore_room_scan_max_root_retries").value)
-            if self.room_scan_root_retry_count < max_retries:
-                self.room_scan_root_retry_count += 1
-                self.room_scan_is_retry_sweep = True
-                self.room_scan_steps_done_this_sweep = 0
-                self.publish_event(
-                    f"이 위치에서 갈 곳을 못 찾음 - 방향을 45도 바꿔 다시 확인합니다 "
-                    f"({self.room_scan_root_retry_count}/{max_retries}) - 정지 명령 전까지 탐색을 계속합니다"
-                )
-                self.room_scan_begin_rotate(0.5, "await_vlm_step")
-                return
+            # Root spot with nothing more to try. "탐색중단은 통로가 막혀서
+            # 중단하면 안돼" - this NEVER transitions to STOPPED on its own;
+            # only an explicit 정지/explore_stop command ends the mission.
+            # Keep re-sweeping from a rotating fractional offset forever -
+            # cycling through a few different sub-step offsets (not just
+            # repeating the same 0.5 shift) so successive cycles actually
+            # sample different bearings instead of oscillating between the
+            # same two sets forever. With the current 4-heading/90-degree
+            # calibration, 0.5/0.25/0.75 step shifts land on 45/22.5/67.5
+            # degrees - between them, most of the circle gets covered over a
+            # few cycles even though no single sweep can (only 4 samples at
+            # a time is possible without re-tuning the rotation timing).
+            self.room_scan_root_retry_count += 1
+            self.room_scan_is_retry_sweep = True
+            self.room_scan_steps_done_this_sweep = 0
+            offsets = (0.5, 0.25, 0.75)
+            shift = offsets[(self.room_scan_root_retry_count - 1) % len(offsets)]
             self.publish_event(
-                "탐색 완료 - 여러 번 다시 확인해도 더 이상 갈 곳이 없습니다. "
-                + "; ".join(self.explore_graph.summary_lines())
+                f"이 위치에서 갈 곳을 못 찾음 - 방향을 바꿔 다시 확인합니다 "
+                f"(계속 재탐색 중, {self.room_scan_root_retry_count}번째) - 정지 명령 전까지 탐색을 멈추지 않습니다"
             )
-            self.room_phase = None
-            self.set_state(PatrolState.STOPPED)
-            self.stop_motion()
+            self.room_scan_begin_rotate(shift, "await_vlm_step")
             return
         half = self.room_scan_total_steps // 2
         delta = (half - self.room_scan_heading_step) % self.room_scan_total_steps
@@ -966,10 +991,13 @@ class PatrolNode(Node):
         self.room_scan_vlm_text = ""
         self.room_scan_phase_started_at = time.monotonic()
         self.room_phase = "await_obstacle_check"
+        width = float(self.get_parameter("robot_width_m").value)
+        height = float(self.get_parameter("robot_height_m").value)
         question = (
             "로봇이 이 방향으로 전진하다가 정면 장애물 센서에 뭔가 걸렸습니다. 이 사진을 보고 로봇"
-            "(폭 약 15cm, 천천히 이동 중)이 조금 더 지나갈 틈이 있는지 판단해줘. 좁아도 지나갈 수 "
-            "있으면 'PASS:YES'로 시작하고, 완전히 막혀서 못 가면 'PASS:NO'로 시작해서 10자 이내로 "
+            f"(가로세로 약 {width*100:.0f}cm, 높이 {height*100:.0f}cm, 천천히 이동 중)이 조금 더 "
+            "지나갈 틈이 있는지 판단해줘. 이 로봇은 작으니 좁아 보여도 실제로 지나갈 수 있으면 "
+            "'PASS:YES'로 시작하고, 정말 완전히 막혀서 못 가면 'PASS:NO'로 시작해서 10자 이내로 "
             "이유를 적어줘."
         )
         self.get_logger().info("[room_scan] obstacle_check vlm_explore_trigger sent")

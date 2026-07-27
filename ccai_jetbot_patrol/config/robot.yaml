@@ -56,16 +56,17 @@ patrol_node:
     explore_room_scan_vlm_timeout_seconds: 15.0
     explore_room_scan_advance_seconds: 4.0
     explore_graph_file: "data/room_graph.json"
-    # "별도로 명령하지 않는 한 요청한 임무를 끝까지 수행해" - see
-    # room_scan_begin_backtrack_or_finish's comment. Retries a shifted sweep
-    # this many times at the root spot before actually declaring the
-    # mission done, instead of stopping after the first empty sweep.
-    explore_room_scan_max_root_retries: 3
     # "LLM이 적극 개입하여 자율탐색" - see room_scan_begin_obstacle_check's
     # declare_parameter comment. Before abandoning a direction the VLM
     # already judged movable, ask it to confirm from the close-up view
     # whether it's actually blocked or just narrow, this many times.
     explore_room_scan_max_obstacle_overrides: 2
+    # Actual chassis size (2026-07-27) - see patrol_node.py's declare_parameter
+    # comment. Fed into the VLM obstacle/scan prompts so it judges passability
+    # against this robot's real footprint, not a guess.
+    robot_width_m: 0.18
+    robot_length_m: 0.18
+    robot_height_m: 0.25
 
 visual_odom_node:
   ros__parameters:
@@ -208,12 +209,14 @@ depth_nav_node:
     linear_speed: 0.045
     turn_speed: 0.16
     max_angular_speed: 0.22
-    # Raised from 0.45m (2026-07-27): no wheel encoders means stopping
-    # distance after this triggers isn't precise, and this node's own
-    # region_distance() bug (fixed same day - see depth_nav_node.py) let the
-    # robot get close enough that depth readings went invalid and it kept
-    # driving in. More margin here compensates for both.
-    obstacle_stop_distance_m: 0.6
+    # Was raised to 0.6m earlier the same day (2026-07-27) as generic sensor-
+    # noise margin, but that was sized without the actual chassis in mind -
+    # confirmed on real hardware that 0.6m constantly rejected genuinely
+    # passable furniture gaps in a cluttered office for a robot that's only
+    # 0.18m wide/long (see patrol_node.py's robot_width_m/robot_length_m).
+    # Lowered to give roughly the robot's own footprint as clearance beyond
+    # its body, not 3x that. Re-raise if this turns out to clip anything.
+    obstacle_stop_distance_m: 0.3
     min_valid_frame_seconds: 1.0
     obstacle_avoidance_hold_seconds: 1.0
     obstacle_clear_confirm_frames: 5
