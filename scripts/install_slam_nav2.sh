@@ -42,6 +42,12 @@ cd "$(dirname "$0")/.."
 LOG_FILE="${LOG_FILE:-$(pwd)/install_slam_nav2.log}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 echo "[ccai] logging to ${LOG_FILE}"
+# 2026-07-28: a run was diagnosed as "the fix didn't work" when it was
+# actually running a stale checkout (no `git pull` before rerunning) -
+# the container bind-mounts the host repo, so a git pull on either side
+# is enough, but there was no way to tell from the log alone that this
+# had (or hadn't) happened. Print it every run so that's never ambiguous.
+echo "[ccai] repo commit: $(git rev-parse --short HEAD 2>/dev/null || echo unknown) ($(git log -1 --format=%cd --date=iso 2>/dev/null || echo unknown))"
 
 if [ -f /opt/ros/humble/setup.bash ]; then
   set +u
