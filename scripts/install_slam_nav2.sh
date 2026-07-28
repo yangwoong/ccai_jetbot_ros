@@ -66,7 +66,13 @@ ensure_swap() {
   # (or worse, some other container process) partway through.
   local total_swap_kb
   total_swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-  if [ "${total_swap_kb:-0}" -ge 2097152 ]; then
+  # 2026-07-28: confirmed on real hardware that 4GB RAM + 4GB pre-existing
+  # swap still OOM-killed the compiler on Parameters.cpp (see
+  # build_rtabmap_from_source's cmake comment for the -O1 fix, which
+  # should be the main mitigation) - raised the "already enough, skip"
+  # bar from 2GB to 6GB as extra headroom on top of that fix, not a
+  # replacement for it.
+  if [ "${total_swap_kb:-0}" -ge 6291456 ]; then
     echo "[ccai] swap already present ($((total_swap_kb / 1024))MB), skipping swapfile creation"
     return 0
   fi
@@ -126,12 +132,29 @@ build_rtabmap_from_source() {
 
   local core_timeout="${RTABMAP_CORE_BUILD_TIMEOUT_SECONDS:-2400}"
   echo "[ccai] building rtabmap core library (cmake, capped at ${core_timeout}s, 1 job to limit memory use)" | tee -a "${build_log}"
+  # 2026-07-28: confirmed on real hardware that the default Release build
+  # (-O3) OOM-kills the compiler partway through corelib/src/Parameters.cpp
+  # even at -j1 with 4GB RAM + 4GB swap - Parameters.cpp's giant macro-based
+  # parameter table is a well-known single-file memory hog for RTAB-Map on
+  # constrained ARM boards (make's "wait: No child processes" is the
+  # kernel OOM killer reaping cc1plus, not a real compile error). -O1
+  # instead of -O3 is the standard community workaround, cutting per-file
+  # compiler memory substantially. Also drop BUILD_APP/BUILD_TOOLS/
+  # BUILD_EXAMPLES (RTAB-Map's own Qt5/VTK-based GUI/tools/examples) -
+  # this project only needs the core library + rtabmap_ros, and those Qt/VTK
+  # targets are themselves heavy to compile.
   if ! timeout "${core_timeout}" bash -c "
       set -e
       cd '${ws}/src/rtabmap'
+      # Wipe any previous build dir - a prior attempt (like the one that
+      # just OOM-killed mid-compile) can leave a CMake cache configured
+      # without today's flags, or half-written object files; safer to
+      # reconfigure from scratch than assume incremental state is sound.
+      rm -rf build
       mkdir -p build
       cd build
-      cmake ..
+      cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O1 \
+            -DBUILD_APP=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF ..
       make -j1
       make install
     " >> "${build_log}" 2>&1

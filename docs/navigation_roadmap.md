@@ -415,7 +415,26 @@ robot'작은방' 좌표로 이동 시작 ...                                <- E
 
 실행: 컨테이너 안에서 `scripts/install_slam_nav2.sh` 재실행.
 
+### rtabmap 코어 빌드 1차 시도 실패 - OOM, -O1로 재시도 (2026-07-28)
+
+실기에서 처음 실행한 결과: 시스템 빌드 의존성(PCL 1.8.1, OpenCV 4.5.0, Qt 5.9.5)은 apt로 정상 설치됐고, `rtabmap` 코어 cmake 설정도 통과했지만, `corelib/src/Parameters.cpp.o`를 컴파일하던 도중 빌드가 죽었습니다:
+
+```
+Building CXX object corelib/src/CMakeFiles/rtabmap_core.dir/Parameters.cpp.o
+make[2]: *** wait: No child processes.  Stop.
+```
+
+`make -j1`(한 번에 한 파일)로 돌렸는데도 이 지점에서 멈춘 것, 그리고 "wait: No child processes"라는 문구 자체가 **컴파일러(cc1plus) 프로세스가 커널 OOM killer에 의해 강제 종료됐다**는 신호입니다(정상적인 컴파일 에러가 아님). RTAB-Map의 `Parameters.cpp`는 매크로 기반의 거대한 파라미터 테이블 하나짜리 파일이라, ARM 보드에서 Release(`-O3`) 최적화로 컴파일할 때 단일 파일임에도 수 GB의 메모리를 먹는 것으로 커뮤니티에 잘 알려진 문제입니다. 이 로봇은 4GB RAM + (당시) 4GB 스왑이었는데 그걸로도 부족했습니다.
+
+**수정**:
+- cmake에 `-DCMAKE_CXX_FLAGS_RELEASE=-O1`을 추가해서 빌드 타입(Release)은 유지하되 최적화 수준만 낮춤 - 이 문제의 표준 커뮤니티 해결법이고, 컴파일러 메모리 사용량을 크게 줄입니다.
+- `-DBUILD_APP=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF`로 RTAB-Map 자체 GUI 앱/도구/예제(Qt5/VTK 기반이라 컴파일이 특히 무거움)를 아예 꺼버림 - `rtabmap_ros`를 통해서만 쓸 거라 필요 없음.
+- 스왑 임계값을 2GB→6GB로 올림(이미 4GB 있었는데 부족했던 걸 실측으로 확인했으니, -O1 수정과 별개로 여유를 더 둠).
+- 이전 실패로 남은 `build/` 디렉터리(오래된 CMake 캐시, 중간에 끊긴 오브젝트 파일)를 매번 `rm -rf`하고 새로 구성하도록 함 - 재실행 시 상태가 꼬여있을 수 있어서.
+
 ### 아직 검증 안 된 것 (정직하게, 실기 테스트 전)
+
+- **rtabmap -O1/GUI-비활성화 재시도 (2026-07-28) 미검증**: 이 수정이 실제로 OOM을 피하는지, 그래도 안 되면 스왑을 더 늘리거나 Parameters.cpp만 개별적으로 더 낮은 최적화로 컴파일하는(`set_source_files_properties`) 등 더 세밀한 대응이 필요할 수 있습니다.
 
 - **rtabmap 소스 빌드 스크립트 (2026-07-28) 완전 미검증**: 스크립트 자체를 실행해본 적이 없습니다 - 성공/실패 여부, 실제 빌드 시간, 메모리 사용량 전부 미지수입니다.
 
