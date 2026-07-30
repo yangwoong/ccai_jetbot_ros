@@ -70,38 +70,42 @@ ensure_swap() {
   # native builds (pycuda) showed real memory pressure. A swapfile gives a
   # slow-but-survivable path instead of the OOM killer taking out the build
   # (or worse, some other container process) partway through.
+  #
+  # 2026-07-28: confirmed on real hardware that `swapon` fails with
+  # "Operation not permitted" from INSIDE this container - ordinary Docker
+  # containers don't have CAP_SYS_ADMIN, which swapon requires, regardless
+  # of the container's own memory limits. Swap is a host-kernel resource
+  # anyway: once enabled on the HOST, every container using that kernel can
+  # use it with no extra privileges needed - trying to swapon from inside
+  # the container was the wrong layer for this from the start. This
+  # function now only ever probes/reports; if there isn't enough swap
+  # already active on the host, it prints the exact commands to run there
+  # (outside docker) instead of silently attempting (and failing) to
+  # create it here.
   local total_swap_kb
   total_swap_kb=$(awk '/SwapTotal/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-  # 2026-07-28: confirmed on real hardware that 4GB RAM + 4GB pre-existing
-  # swap still OOM-killed the compiler on Parameters.cpp (see
-  # build_rtabmap_from_source's cmake comment for the -O1 fix, which
-  # should be the main mitigation) - raised the "already enough, skip"
-  # bar from 2GB to 6GB as extra headroom on top of that fix, not a
-  # replacement for it.
+  # Confirmed on real hardware that 4GB RAM + ~4GB pre-existing swap still
+  # OOM-killed the compiler on more than one corelib file even with the
+  # -O1 fix below - 6GB is a floor, not a guarantee; if it still fails,
+  # go bigger.
   if [ "${total_swap_kb:-0}" -ge 6291456 ]; then
-    echo "[ccai] swap already present ($((total_swap_kb / 1024))MB), skipping swapfile creation"
+    echo "[ccai] swap already present ($((total_swap_kb / 1024))MB) - OK"
     return 0
   fi
-  local swap_path="/swapfile_ccai_rtabmap"
-  local swap_size_mb="${RTABMAP_SWAP_SIZE_MB:-4096}"
-  if [ -f "${swap_path}" ]; then
-    echo "[ccai] ${swap_path} already exists, enabling it"
-    swapon "${swap_path}" 2>/dev/null || true
-    return 0
-  fi
-  local free_disk_mb
-  free_disk_mb=$(df -Pm / | awk 'NR==2 {print $4}')
-  if [ "${free_disk_mb:-0}" -lt $((swap_size_mb + 1024)) ]; then
-    echo "[ccai] not enough free disk (${free_disk_mb}MB) to safely add a ${swap_size_mb}MB swapfile - skipping, build may OOM" >&2
-    return 0
-  fi
-  echo "[ccai] creating ${swap_size_mb}MB swapfile at ${swap_path} (no existing swap found)"
-  if fallocate -l "${swap_size_mb}M" "${swap_path}" 2>/dev/null || dd if=/dev/zero of="${swap_path}" bs=1M count="${swap_size_mb}" 2>/dev/null; then
-    chmod 600 "${swap_path}"
-    mkswap "${swap_path}" && swapon "${swap_path}" && echo "[ccai] swap enabled"
-  else
-    echo "[ccai] swapfile creation failed - continuing without it, build may OOM" >&2
-  fi
+  cat <<EOF
+[ccai] Only $((total_swap_kb / 1024))MB of swap is active, and this container
+[ccai] can't create more itself (swapon needs a host-level privilege Docker
+[ccai] containers don't have). Run this on the JETSON HOST (not inside
+[ccai] "docker exec"), then re-run this script inside the container:
+
+  sudo fallocate -l 8G /swapfile_ccai_rtabmap || sudo dd if=/dev/zero of=/swapfile_ccai_rtabmap bs=1M count=8192
+  sudo chmod 600 /swapfile_ccai_rtabmap
+  sudo mkswap /swapfile_ccai_rtabmap
+  sudo swapon /swapfile_ccai_rtabmap
+
+[ccai] Continuing anyway with whatever swap is already active - this build
+[ccai] may OOM again without it.
+EOF
 }
 
 build_rtabmap_from_source() {
@@ -159,7 +163,16 @@ build_rtabmap_from_source() {
       rm -rf build
       mkdir -p build
       cd build
-      cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-O1 \
+      # 2026-07-28: -O1 alone got further (past Parameters.cpp) but still
+      # OOM-killed on a later file (Odometry.cpp) - stacking GCC's own
+      # memory-reduction params on top: lowering ggc-min-expand/
+      # ggc-min-heapsize makes the compiler's garbage collector run more
+      # often during compilation instead of letting garbage accumulate,
+      # trading some compile time for meaningfully lower peak memory per
+      # translation unit. See ensure_swap's comment for the other half of
+      # this mitigation (more swap - has to be done on the host, not here).
+      cmake -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS_RELEASE='-O1 --param ggc-min-expand=10 --param ggc-min-heapsize=32768' \
             -DBUILD_APP=OFF -DBUILD_TOOLS=OFF -DBUILD_EXAMPLES=OFF ..
       make -j1
       make install
