@@ -33,7 +33,15 @@ REBUILD_IMAGE="${REBUILD_IMAGE:-0}"
 
 if [ "${REBUILD_IMAGE}" = "1" ] || ! docker image inspect "${IMAGE_TAG}" >/dev/null 2>&1; then
   echo "[ccai] building ${IMAGE_TAG} (apt-get install only, no source compile - should be fast)"
-  docker build -t "${IMAGE_TAG}" -f docker/rtabmap_sidecar/Dockerfile .
+  # Build context is the Dockerfile's own directory, NOT the repo root (`.`) -
+  # confirmed on real hardware that using the repo root as context fails
+  # ("no permission to read from .../.pip-cache/...") because docker tries
+  # to tar up the whole repo, including .pip-cache (root-owned leftovers
+  # from the main container's pip installs) and deps/rtabmap_ws (the failed
+  # source-build attempt, potentially huge). This Dockerfile has no COPY
+  # instructions at all, so it never needed repo-root context in the first
+  # place.
+  docker build -t "${IMAGE_TAG}" -f docker/rtabmap_sidecar/Dockerfile docker/rtabmap_sidecar
 else
   echo "[ccai] reusing existing image ${IMAGE_TAG} (set REBUILD_IMAGE=1 to rebuild)"
 fi

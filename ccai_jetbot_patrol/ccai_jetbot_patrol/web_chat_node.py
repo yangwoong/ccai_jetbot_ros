@@ -214,12 +214,22 @@ class WebChatNode(Node):
                 self.send_bytes(json.dumps(payload).encode("utf-8"), "application/json; charset=utf-8")
 
             def send_bytes(self, body: bytes, content_type: str):
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                # A browser tab reloading/closing mid-request (very common
+                # for the polled camera preview images) makes this a
+                # BrokenPipeError/ConnectionResetError, not a real error -
+                # confirmed on real hardware this was flooding the log with
+                # full tracebacks on every such disconnect without actually
+                # being the cause of any missing image (the client just
+                # didn't want that particular response).
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
         class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
             daemon_threads = True
