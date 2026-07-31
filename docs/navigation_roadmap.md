@@ -450,7 +450,30 @@ swapon: /swapfile_ccai_rtabmap: swapon failed: Operation not permitted
 
 **사용자가 해야 할 일**: 스크립트가 출력하는 명령으로 Jetson **호스트**(컨테이너 밖, `docker exec` 하기 전 셸)에서 스왑을 8GB로 늘려주세요. 그 다음 컨테이너 안에서 스크립트 재실행.
 
+세 번째 실행 결과(ggc 파라미터 적용 전): `-O1`은 여전히 유효했지만 이번엔 `util3d_registration.cpp`(36%)에서 다시 OOM. 매번 다른 파일에서 죽는 패턴 - 이 컨테이너의 실제 가용 메모리(RAM+스왑)로는 rtabmap corelib의 여러 파일이 개별적으로 한계선에 걸쳐 있다는 뜻입니다.
+
+### 소스 빌드 포기 → 두 번째 컨테이너(apt 설치) 방식으로 전환 (2026-07-28)
+
+세 번의 OOM을 겪은 뒤 사용자가 "rtabmap이 이미 컴파일된 Jetson 컨테이너를 쓰면 어떠냐"고 제안했습니다. 조사 결과:
+
+- **dusty-nv의 jetson-containers**(NVIDIA 진영에서 관리하는 Jetson 프리빌드 이미지 프로젝트): rtabmap 패키지가 아예 없고, 현재는 JetPack 6.2/7만 지원 - 이 로봇의 JetPack 4.6.x/L4T r32.7.1은 지원 대상 밖입니다.
+- **RTAB-Map 공식 Docker 이미지(`introlab3it/rtabmap`)**: 존재하지만 focal(20.04)/jammy(22.04)/noble(24.04)용만 있고 **bionic(18.04)은 없습니다** - 저희 메인 컨테이너와 glibc/라이브러리 버전이 안 맞아 바이너리를 그대로 못 씁니다.
+
+하지만 더 나은 길이 있었습니다: **`ros-humble-rtabmap-ros`가 apt에 없는 건 이 프로젝트의 커스텀 bionic 백포트 저장소만의 문제**입니다. ROS2 Humble의 공식 타겟 OS인 **Ubuntu 22.04(jammy)**에서는 평범한 apt 바이너리 패키지로 정상 배포됩니다(컴파일 불필요).
+
+**새 구조**: 메인 컨테이너(`ccai-jetbot`, bionic)는 그대로 두고, **별도의 두 번째 컨테이너**를 표준 `ros:humble-ros-base`(Ubuntu 22.04, arm64 공식 이미지) 기반으로 띄워서 `apt-get install ros-humble-rtabmap-ros`만 실행 - 컴파일이 아예 없으니 OOM 위험도 없습니다. 두 컨테이너는 `--network host` + 같은 `ROS_DOMAIN_ID`(42)를 공유해서, 메인 컨테이너가 발행하는 D435i 토픽(`/camera/camera/color/image_raw` 등)을 두 번째 컨테이너가 그냥 구독합니다 - 커널은 공유하되 userspace/glibc 버전은 서로 독립적인, 표준적인 멀티 컨테이너 ROS2 구성입니다. GPU/CUDA는 안 씀(순수 CPU 기반 rtabmap - 지금까지의 소스 빌드 시도도 어차피 CUDA 없이 설정했었음).
+
+**추가된 파일**:
+- `docker/rtabmap_sidecar/Dockerfile`: `ros:humble-ros-base` + `apt-get install ros-humble-rtabmap-ros` (+image-transport/cv-bridge).
+- `scripts/run_rtabmap_container.sh`: 이미지 빌드(1회) + 두 번째 컨테이너 실행. Jetson **호스트**에서 실행(메인 컨테이너처럼 `docker exec`가 아니라 `host_docker_run.sh`와 같은 위치에서).
+- `ccai_jetbot_patrol/launch/rtabmap_sidecar.launch.py`: `rtabmap_odom`의 `rgbd_odometry` + `rtabmap_slam`의 `rtabmap` 노드를 D435i 토픽(`rgb/depth/camera_info`)에 remap. 이 프로젝트 자체의 `visual_odom_node`에 의존하지 않고 rtabmap 자체 RGBD 오도메트리를 씀(독립적으로 테스트/디버깅 가능하도록 의도적으로 분리) - `frame_id`는 realsense2_camera가 이미 발행하는 카메라 광학 프레임을 그대로 씀(추가 TF 설정 불필요).
+- 이 sidecar를 쓰려면 메인 컨테이너를 `CCAI_ENABLE_VISUAL_ODOM=1`로 띄워야 함(`align_depth`가 켜져서 `/camera/camera/aligned_depth_to_color/image_raw`가 실제로 발행되도록 - `config/robot.yaml`의 `visual_odom_node` 섹션이 이미 이 토픽명을 전제하고 있음).
+
+`install_slam_nav2.sh`의 소스 빌드 경로(`build_rtabmap_from_source`)는 함수 자체는 기록으로 남겨뒀지만 더 이상 자동 호출되지 않습니다 - 대신 `scripts/run_rtabmap_container.sh`를 안내합니다.
+
 ### 아직 검증 안 된 것 (정직하게, 실기 테스트 전)
+
+- **rtabmap 두 번째 컨테이너 방식 (2026-07-28) 완전 미검증**: `docker/rtabmap_sidecar/Dockerfile` 빌드 자체를 실행해본 적이 없습니다 - 이 Jetson의 aarch64 jammy apt 미러에 `ros-humble-rtabmap-ros`의 의존 패키지가 전부 있는지조차 확인 못 했습니다. 실행되더라도 `rgbd_odometry`/`rtabmap` 노드가 메인 컨테이너의 D435i 토픽을 실제로 구독/동기화하는지, 오도메트리 품질이 쓸 만한지는 전부 다음 단계에서 확인해야 합니다.
 
 - **rtabmap 3차 시도(호스트 스왑 안내 + GCC ggc 파라미터) 미검증**: 이번에도 OOM이 나면 `Odometry.cpp`(또는 그 이후 파일)를 개별적으로 `set_source_files_properties`로 더 낮은 최적화(`-O0`)로 컴파일하는 세분화된 대응이 다음 단계입니다.
 

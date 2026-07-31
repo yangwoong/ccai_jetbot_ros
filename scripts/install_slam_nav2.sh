@@ -233,9 +233,30 @@ if [ "${#MISSING[@]}" -gt 0 ]; then
     [ "${pkg}" = "ros-humble-rtabmap-ros" ] && RTABMAP_MISSING=1
   done
   if [ "${RTABMAP_MISSING}" -eq 1 ]; then
-    if ! build_rtabmap_from_source; then
-      echo "[ccai] rtabmap source build did not complete - see rtabmap_source_build.log and send it back; each failure gets resolved one at a time from the actual error, same as xacro/diagnostic_updater/pycuda before it, not guessed upfront." >&2
-    fi
+    cat <<EOF
+[ccai] ros-humble-rtabmap-ros is missing here (expected - see above), and
+[ccai] this script no longer attempts to source-build it in THIS
+[ccai] container (2026-07-28: three attempts here each OOM-killed the
+[ccai] compiler on a different corelib file, even after -O1/dropping the
+[ccai] GUI build and adding swap - see docs/navigation_roadmap.md's
+[ccai] "rtabmap 코어 빌드" entries for the history if picking this back up
+[ccai] is ever worth it).
+[ccai]
+[ccai] Instead: ros-humble-rtabmap-ros is a normal apt binary package on
+[ccai] ROS2 Humble's OFFICIAL target OS (Ubuntu 22.04/jammy) - just not on
+[ccai] THIS container's custom Ubuntu 18.04/bionic backport. Run this on
+[ccai] the Jetson HOST instead (not inside this container):
+[ccai]
+[ccai]   scripts/run_rtabmap_container.sh
+[ccai]
+[ccai] which builds a separate, standard jammy-based container (apt
+[ccai] install only, no compilation, no OOM risk) and runs it alongside
+[ccai] this one, sharing --network host + ROS_DOMAIN_ID so it can
+[ccai] subscribe to the D435i topics this container already publishes.
+[ccai] build_rtabmap_from_source() is kept in this script only as a
+[ccai] reference for what was already tried, in case the source-build
+[ccai] path needs revisiting for some other reason later.
+EOF
   fi
 
   echo "[ccai] Not attempting navigation2/nav2-bringup/robot-localization from source in this script -"
