@@ -20,6 +20,18 @@ set -euo pipefail
 # active AND CCAI_ENABLE_VISUAL_ODOM=1 (so align_depth is enabled and
 # /camera/camera/aligned_depth_to_color/image_raw exists - see
 # ccai_jetbot_patrol/launch/rtabmap_sidecar.launch.py's docstring).
+#
+# 2026-07-28: confirmed on real hardware that --network host alone wasn't
+# enough for this sidecar to see the main container's topics - FastDDS
+# logged "selected interface 'lo' is not multicast-capable: disabling
+# multicast" and fell back to shared-memory (SHM) transport for same-host
+# discovery, but /dev/shm is namespaced per-container by default, so two
+# separate containers (even sharing --network host) each got their own
+# private SHM and could never actually discover each other. The main
+# container already runs with --ipc host (for CSI camera support - see
+# host_docker_run.sh), so this one needs it too: --ipc host shares the
+# HOST's /dev/shm, which is what makes FastDDS's SHM transport (and thus
+# cross-container discovery) actually work.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${SCRIPT_DIR}/.."
@@ -52,6 +64,7 @@ docker run -d \
   --name "${CONTAINER_NAME}" \
   --restart unless-stopped \
   --network host \
+  --ipc host \
   -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
   -e ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY}" \
   -e RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION}" \

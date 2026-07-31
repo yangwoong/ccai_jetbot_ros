@@ -471,7 +471,17 @@ swapon: /swapfile_ccai_rtabmap: swapon failed: Operation not permitted
 
 `install_slam_nav2.sh`의 소스 빌드 경로(`build_rtabmap_from_source`)는 함수 자체는 기록으로 남겨뒀지만 더 이상 자동 호출되지 않습니다 - 대신 `scripts/run_rtabmap_container.sh`를 안내합니다.
 
+### 컨테이너 빌드 컨텍스트 권한 에러 + 메인 빌드 오염 + 컨테이너 간 디스커버리 실패 (2026-07-28, 실기 3연속 이슈)
+
+sidecar를 실기에서 처음 돌려보면서 세 가지 별개 문제가 연쇄로 나왔습니다.
+
+1. **`docker build` 권한 에러**: `run_rtabmap_container.sh`가 리포 루트(`.`)를 빌드 컨텍스트로 넘겨서, `.pip-cache`(예전 컨테이너 pip 캐시, root 소유)를 tar로 묶다가 권한 에러로 실패. sidecar Dockerfile은 `COPY`가 없어서 애초에 리포 전체가 필요 없었음 - 빌드 컨텍스트를 `docker/rtabmap_sidecar`로 좁힘.
+2. **메인 컨테이너 `colcon build` 오염**: 위 문제를 고치기 전, 예전 rtabmap 소스 빌드 시도로 남은 `deps/rtabmap_ws`가 메인 컨테이너의 `colcon build`(경로 제한 없이 cwd에서 재귀 스캔)에 의해 워크스페이스 패키지로 잘못 인식되어 같이 빌드되다 실패했고, 그 여파로 `realsense2_camera_msgs`까지 빌드가 중단되어 **D435i 카메라가 완전히 죽는** 사고로 이어짐(사용자가 "카메라 영상이 안 나와"로 보고). `deps/COLCON_IGNORE` 마커를 매 시작마다 무조건 생성하도록 고쳐서 `deps/` 전체를 colcon 스캔 대상에서 제외.
+3. **컨테이너 간 DDS 디스커버리 실패**: 카메라를 살려도 rtabmap sidecar가 계속 "5초간 데이터 없음"을 반복. 로그의 `selected interface "lo" is not multicast-capable: disabling multicast` 경고가 원인 - 멀티캐스트가 막히면 FastDDS는 같은 호스트 프로세스 간 통신에 공유메모리(SHM, `/dev/shm`) 전송으로 대체하는데, **도커 컨테이너는 기본적으로 `/dev/shm`이 컨테이너마다 격리**되어 있어서 `--network host`만으로는 서로 못 봄. 메인 컨테이너는 CSI 카메라 지원 때문에 이미 `--ipc host`가 붙어 있었지만(`host_docker_run.sh`) sidecar 스크립트엔 빠져 있었음 - `run_rtabmap_container.sh`에 `--ipc host` 추가.
+
 ### 아직 검증 안 된 것 (정직하게, 실기 테스트 전)
+
+- **`--ipc host` 추가 후 컨테이너 간 디스커버리 (2026-07-28) 미검증**: 이 수정 이후 재실행이 아직 안 됨 - `rgbd_odometry`/`rtabmap`이 실제로 데이터를 받기 시작하는지 확인 필요.
 
 - **rtabmap 두 번째 컨테이너 방식 (2026-07-28) 완전 미검증**: `docker/rtabmap_sidecar/Dockerfile` 빌드 자체를 실행해본 적이 없습니다 - 이 Jetson의 aarch64 jammy apt 미러에 `ros-humble-rtabmap-ros`의 의존 패키지가 전부 있는지조차 확인 못 했습니다. 실행되더라도 `rgbd_odometry`/`rtabmap` 노드가 메인 컨테이너의 D435i 토픽을 실제로 구독/동기화하는지, 오도메트리 품질이 쓸 만한지는 전부 다음 단계에서 확인해야 합니다.
 
