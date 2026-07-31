@@ -121,6 +121,20 @@ else
   fi
 fi
 
+# `deps/` holds local-only, non-workspace artifacts (librealsense build
+# output, and - since 2026-07-28 - the now-abandoned deps/rtabmap_ws from
+# the rtabmap source-build attempts, see install_slam_nav2.sh). Confirmed
+# on real hardware that colcon build below (no path scoping, so it
+# recurses from cwd) picked up deps/rtabmap_ws's packages as if they were
+# part of THIS workspace, failed on them, and aborted realsense2_camera_msgs
+# as collateral damage in the same build graph - breaking the D435i camera
+# entirely as a side effect of an unrelated, already-abandoned experiment.
+# COLCON_IGNORE is colcon's own documented marker for "never scan this
+# directory" - written unconditionally on every start so this can't
+# recur regardless of what ends up under deps/ later.
+mkdir -p deps
+touch deps/COLCON_IGNORE
+
 # A failure in ANY discovered package (e.g. an optional/experimental
 # dependency like realsense-ros, or one of its own dependencies) used to kill
 # this whole script outright via `set -e` above - and since
